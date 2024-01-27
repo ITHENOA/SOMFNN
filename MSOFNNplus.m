@@ -10,7 +10,7 @@ classdef MSOFNNplus
         n_nodes
         DensityThreshold
         LearningRate
-        batchSize
+        MiniBatchSize
         MaxEpoch
         Layer
         solverName
@@ -19,6 +19,7 @@ classdef MSOFNNplus
         MSE_report
     end
     properties (Access=private)
+        plot
         Xtr
         Ytr
         dataSeenCounter
@@ -37,36 +38,36 @@ classdef MSOFNNplus
                 Ytr % (#data,#dim)                : Output data
                 n_Layer (1,1) {mustBeInteger,mustBePositive}
                 opts.n_hiddenNodes (1,:) {mustBeInteger,mustBePositive,mustBeVector} = ones(1,n_Layer-1)*3*size(Ytr,2)
-                opts.LearningRate (1,1) {mustBeInteger,mustBePositive} = 0.001
+                opts.LearningRate (1,1) {mustBePositive} = 0.001
                 opts.MaxEpoch (1,1) {mustBeInteger,mustBePositive} = 500
-                opts.DensityThreshold (1,1) {mustBeInteger,mustBePositive} = exp(-3)
+                opts.DensityThreshold (1,1) {mustBePositive} = exp(-3)
                 opts.verbose (1,1) {logical} = 0
-                opts.Plot (1,1) {logical} = 0
-                opts.ActivationFunction {mustBeTextScalar} = "Sigmoid"
+                opts.plot (1,1) {logical} = 0
+                opts.ActivationFunction = "Sigmoid"
                 opts.BatchNormType {mustBeTextScalar} = "none"
                 opts.SolverName {mustBeTextScalar} = "SGD"
+                opts.MiniBatchSize {mustBeInteger,mustBePositive} = 1
                 opts.adampar_epsilon = 1e-8
                 opts.adampar_beta1 = 0.9
                 opts.adampar_beta2 = 0.999
                 opts.adampar_m0 = 0
                 opts.adampar_v0 = 0
             end
-            opts.ActivationFunction = validatestring(opts.ActivationFunction,{"Sigmoid","ReLU","LeakyRelu","Tanh","ELU"}); % linear
-            opts.BatchNormType = validatestring(opts.BatchNormType,{"none","zscore"});
-            opts.SolverName = validatestring(opts.SolverName,{"SGD","Adam","MiniBatchGD"});
+            opts.ActivationFunction = validatestring(opts.ActivationFunction,["Sigmoid","ReLU","LeakyRelu","Tanh","ELU"]); % linear
+            opts.BatchNormType = validatestring(opts.BatchNormType,["none","zscore"]);
+            opts.SolverName = validatestring(opts.SolverName,["SGD","Adam","MiniBatchGD"]);
 
-            % Parameters
-            W = [opts.n_hiddenNodes,size(Ytr,2)];
-            M = [size(Xtr,2),opts.n_hiddenNodes];
-            o.n_nodes = [M,W(end)];
-            o.n_Layer = n_Layer;
-            o.DensityThreshold = opts.DensityThreshold;
-            o.LearningRate = opts.LearningRate;
-            o.MaxEpoch = opts.MaxEpoch;
-            o.batchSize = opts.batchSize;
-            o.n_data = size(Xtr, 1);
+            if numel(opts.ActivationFunction) == 1
+                opts.ActivationFunction = repmat(opts.ActivationFunction,1,n_Layer);
+            elseif numel(opts.ActivationFunction) == 2
+                opts.ActivationFunction = [repmat(opts.ActivationFunction(1),1,n_Layer-1), opts.ActivationFunction(2)];
+            elseif numel(opts.ActivationFunction) ~= n_Layer
+                error("Incorrect number of AFs")
+            end
 
             % w check conditions
+            W = [opts.n_hiddenNodes,size(Ytr,2)];
+            M = [size(Xtr,2),opts.n_hiddenNodes];
             if sum(M < W)
                 [~,l] = find(M < W);
                 warning(['Number of outputs of layer (%s) may cause overfitting \n' ...
@@ -80,19 +81,37 @@ classdef MSOFNNplus
                     num2str(l), l(1), W(l(1)), W(end));
             end
 
+            % Parameters
+            o.n_Layer = n_Layer;
+            o.n_nodes = [M,W(end)];
+            o.LearningRate = opts.LearningRate; 
+            o.MaxEpoch = opts.MaxEpoch;
+            o.DensityThreshold = opts.DensityThreshold;
+            o.verbose = opts.verbose;
+            o.plot = opts.plot;
+            o.ActivationFunction = opts.ActivationFunction;
+            o.BatchNormType = opts.BatchNormType;
+            o.solverName = opts.SolverName;
+            o.MiniBatchSize = opts.MiniBatchSize;
+            o.n_data = size(Xtr, 1);
+
             if strcmp(o.solverName,"Adam")
                 % Adam Parameters
                 o.adapar.ini_m = opts.adampar_m0;
                 o.adapar.ini_v = opts.adampar_v0;
                 o.adapar.b1 = opts.adampar_beta1;
                 o.adapar.b2 = opts.adampar_beta2;
-                o.adapar.epsilon = opts.adampar_eopts;
+                o.adapar.epsilon = opts.adampar_epsilon;
 
                 % Prepare Adam Parameters
                 o.adapar.m = cell(1,o.n_Layer);
                 o.adapar.v = cell(1,o.n_Layer);
                 [o.adapar.m{:}] = deal(o.adapar.ini_m);
                 [o.adapar.v{:}] = deal(o.adapar.ini_v);
+
+            elseif strcmp(o.solverName,"SGD") && o.MiniBatchSize > 1
+                warning("In SGD Algorithm batch_size should be 1; I fixed this for you")
+                o.MiniBatchSize = 1;
             end
 
             % initialize variables
@@ -114,13 +133,13 @@ classdef MSOFNNplus
 
                 shuffle_idx = randperm(o.n_data);
                 %%%%%%%%%%% iteration %%%%%%%%%%%
-                for it = 1 : ceil(o.n_data/o.batchSize)
+                for it = 1 : ceil(o.n_data/o.MiniBatchSize)
                     iteration = iteration + 1;
-                    MB_idx = shuffle_idx( (it-1)*o.batchSize+1 : min(it*o.batchSize,o.n_data) );
+                    MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,o.n_data) );
 
                     x = o.Xtr(MB_idx,:)';
                     if o.BatchNormType ~= "none"
-                        x = normalize(x,2,o.BatchNormType); % dim=2; normalize each feature
+                        x = normalize(x,1,o.BatchNormType); % dim=2; normalize each feature
                     end
                     y = o.Ytr(MB_idx,:)';
 
@@ -140,7 +159,7 @@ classdef MSOFNNplus
 
                 %%% epoch - results
                 MSE_ep(epoch) = mse(o.Ytr,yhat');
-                m=[epoch, MSE_ep(epoch)]
+                disp([epoch, MSE_ep(epoch)])
             end
             [bestMSE,bestIdx] = min(MSE_ep);
             meanMSE = mean(MSE_ep);
@@ -309,7 +328,7 @@ classdef MSOFNNplus
 
             % tic
             %%% SOLUTION 1
-            [AfAx,AfpAx] = ActFun.(o.ActivationFunction)(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
+            [AfAx,AfpAx] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
             ynl = reshape(AfAx,l.W*l.N,1,[]); % (Wl*Nl,1,MB)
             lam_l = zeros(l.W, l.W*l.N, batch_size);
             for k = 1:batch_size
@@ -318,38 +337,11 @@ classdef MSOFNNplus
                 end
             end
             y = reshape(pagemtimes(lam_l,ynl),[],batch_size);
-            % toc
-            % y
 
-            % clear y
-            % tic
-            % %%% SOLUTION 2
-            % ynl = o.AF(l.A * X); %(Wl*Nl,1)
-            % ynl = reshape(ynl,l.W,l.N);
-            % newlam = zeros(l.W*l.N, batch_size);
-            % for n = 1:l.N
-            %     newlam((n-1)*l.W+1:n*l.W) = repmat(lambda(n,:),l.W,1);
-            % end
-            % lam_ynl = newlam .* ynl;
-            % for n = 1:l.W
-            %     y(n,:) = sum(lam_ynl(n:l.W:l.W*l.N));
-            % end
-            % toc
-            % y
-            %
-            % clear y
-            % tic
-            % %%% SOLUTION 3
-            % ynl = o.AF(l.A * X); %(Wl*Nl,1)
-            % lam_l{k} = deal(zeros(l.W, l.W*l.N));
-            % for k = 1:batch_size
-            %     for n = 1:l.N
-            %         lam_l{k}(:,(n-1)*l.W+1:n*l.W) = diag(ones(1,l.W)*lambda(n,k));
-            %     end
-            %     y(:,k) = lam_l{k} * ynl(:,k);
-            % end
-            % toc
-            % y
+            if sum(isnan(y),"all") || sum(isinf(y),"all")
+                0
+            end
+
         end
 
         %% ------------------------- BACKWARD PATH -------------------------
@@ -398,18 +390,22 @@ classdef MSOFNNplus
                     o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
 
                     % or Algorithm 1
-                    mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
-                    vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
-                    DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
+                    % mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
+                    % vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
+                    % DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
 
                     % or Algorithm 2
-                    % o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
-                    % lr = o.LearningRate
-                    % DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
+                    o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
+                    lr = o.LearningRate
+                    DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
                 end
 
                 % update A
                 o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
+
+                if sum(isinf(o.Layer{l}.A),"all")
+                    0
+                end
 
                 if l == 1, break, end
                 % eq(18) => (W,1,N,MB) : find 'd' of previous layer
@@ -535,7 +531,7 @@ classdef MSOFNNplus
             % Initialize Variables
             o.Layer = cell(1,max_layer);
             for l = 1:max_layer
-                % o.Layer{l}.NO = l;
+                o.Layer{l}.NO = l;
                 o.Layer{l}.M = o.n_nodes(l);
                 o.Layer{l}.W = o.n_nodes(l+1);
                 o.Layer{l}.gMu = inf(o.Layer{l}.M, 1);
@@ -547,7 +543,7 @@ classdef MSOFNNplus
                 o.Layer{l}.CX = inf(1, max_rule/2); % /2 ?
                 o.Layer{l}.P = inf(o.Layer{l}.M, max_rule/2); % /2 ?
                 o.Layer{l}.A = [];
-                o.Layer{l}.X = inf(o.Layer{l}.M + 1, o.batchSize);
+                o.Layer{l}.X = inf(o.Layer{l}.M + 1, o.MiniBatchSize);
             end
             o.n_rulePerLayer = zeros(1, o.n_Layer);
             o.lambda_MB = cell(1,o.n_Layer);

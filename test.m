@@ -1,17 +1,19 @@
 clear
+%%
 clc
-% load mgdata.dat
-% time = mgdata(:,1);
-% x = mgdata(:, 2);
-% for t = 118:1117 
-%     Data(t-117,:) = [x(t-18) x(t-12) x(t-6) x(t) x(t+6)]; 
-% end
-% Xtr = Data(1:800, 1:end-1);
-% Ytr = Data(1:800, end);
-% Xte = Data(801:end, 1:end-1);
-% Yte = Data(801:end, end);
-% clear Data x t mgdata time
-
+%%
+load mgdata.dat
+time = mgdata(:,1);
+x = mgdata(:, 2);
+for t = 118:1117
+    Data(t-117,:) = [x(t-18) x(t-12) x(t-6) x(t) x(t+6)];
+end
+Xtr = Data(1:800, 1:end-1);
+Ytr = Data(1:800, end);
+Xte = Data(801:end, 1:end-1);
+Yte = Data(801:end, end);
+clear Data x t mgdata time
+%%
 load mackey_0.1.mat
 for k = 201:3200
     Xtr(k-200,:) = [X(k-18) X(k-12) X(k-6)];
@@ -22,30 +24,37 @@ for k = 5001:5500
     Yte(k-5000,:) = X(k);
 end
 clear X k
+%%
+data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN_new\dataset\auto_mpg_data (5).xlsx"));
+data(logical(sum(isnan(data),2)),:) = [];
+idx=randperm(size(data,1));
+Xtr = data(idx(1:196),1:7);
+Xte = data(idx(197:end),1:7);
+Ytr = data(idx(1:196),8);
+Yte = data(idx(197:end),8);
 
-tic
-% net = MSOFNN(X_train,Y_train,3,[3 3 1]).train
-toc
-% data
-tic
-% net2=MSOFNNplus(X_train,Y_train,3,"batchSize",1,"MaxEpoch",100)
-toc
-% idx=randperm(398);
-% Xtr = data(idx(1:196),1:6);
-% Xte = data(idx(197:end),1:6);
-% Ytr = data(idx(1:196),7);
-% Yte = data(idx(197:end),7);
-tic
-% for i = 1:6
-net3=MSOFNNplus(Xtr,Ytr,3,...
-    "batchSize",32,...
-    "MaxEpoch",100,...
-    "DensityThreshold",exp(-3),...
-    "verbose",1,...
-    "LearningRate",1)
+%% construct neuro-fuzzy network
+clc
+net = MSOFNNplus(Xtr,Ytr,3,...
+    "ActivationFunction", ["relu","Sigmoid"],...
+    "DensityThreshold", exp(-3),...
+    "MaxEpoch", 200,...
+    "BatchNormType", "none",...
+    "LearningRate", 1,...
+    "SolverName", "sgd",...
+    "MiniBatchSize", 32,...
+    "adampar_beta1", 0.9,...
+    "adampar_beta2", 0.999,...
+    "adampar_epsilon", 1e-8,...
+    "adampar_m0", 0,...
+    "adampar_v0", 0,...
+    "plot", 0,...
+    "verbose", 1)
 
-[~,err] = net3.test(Xte,Yte)
-% err(i) = net3.MSE_report.Mean;
-% end
-% mean(err)
+% Train
+tic
+trained_net = net.train
 toc
+
+% Test
+[~,err] = trained_net.test(Xte,Yte)
