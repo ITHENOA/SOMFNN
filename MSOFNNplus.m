@@ -15,6 +15,7 @@ classdef MSOFNNplus
         Layer
         solverName
         ActivationFunction
+        WeightInitializationType
         BatchNormType
         MSE_report
     end
@@ -30,6 +31,8 @@ classdef MSOFNNplus
         DlamDx % {layer}(Ml,1)
         AFp_AX % derivative of AF : {layer}()
         adapar % parameters of Adam algorithm
+        minX
+        maxX
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -46,6 +49,7 @@ classdef MSOFNNplus
                 opts.ActivationFunction = "Sigmoid"
                 opts.BatchNormType {mustBeTextScalar} = "none"
                 opts.SolverName {mustBeTextScalar} = "SGD"
+                opts.WeightInitializationType {mustBeTextScalar} = "none"
                 opts.MiniBatchSize {mustBeInteger,mustBePositive} = 1
                 opts.adampar_epsilon = 1e-8
                 opts.adampar_beta1 = 0.9
@@ -53,9 +57,12 @@ classdef MSOFNNplus
                 opts.adampar_m0 = 0
                 opts.adampar_v0 = 0
             end
-            opts.ActivationFunction = validatestring(opts.ActivationFunction,["Sigmoid","ReLU","LeakyRelu","Tanh","ELU"]); % linear
             opts.BatchNormType = validatestring(opts.BatchNormType,["none","zscore"]);
             opts.SolverName = validatestring(opts.SolverName,["SGD","Adam","MiniBatchGD"]);
+            opts.WeightInitializationType = validatestring(opts.WeightInitializationType,["none","xavier"]);
+            for i = 1:numel(opts.ActivationFunction)
+                opts.ActivationFunction(i) = validatestring(opts.ActivationFunction(i),["Sigmoid","ReLU","LeakyRelu","Tanh","ELU","Linear"]);
+            end
 
             if numel(opts.ActivationFunction) == 1
                 opts.ActivationFunction = repmat(opts.ActivationFunction,1,n_Layer);
@@ -90,6 +97,7 @@ classdef MSOFNNplus
             o.verbose = opts.verbose;
             o.plot = opts.plot;
             o.ActivationFunction = opts.ActivationFunction;
+            o.WeightInitializationType = opts.WeightInitializationType;
             o.BatchNormType = opts.BatchNormType;
             o.solverName = opts.SolverName;
             o.MiniBatchSize = opts.MiniBatchSize;
@@ -124,6 +132,12 @@ classdef MSOFNNplus
 
         %% ------------------------- Training -------------------------
         function o = train(o)
+            % minX = min(o.Xtr)';
+            % maxX = max(o.Xtr)';
+            % minY = min(o.Ytr);
+            % maxY = max(o.Ytr); 
+            o.Xtr = normalize(o.Xtr,1,"range");
+            o.Ytr = normalize(o.Ytr,1,"range");
             iteration = 0;
             MSE_ep = zeros(1,o.MaxEpoch);
             %%%%%%%% epoch %%%%%%%%
@@ -138,7 +152,7 @@ classdef MSOFNNplus
                     MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,o.n_data) );
 
                     x = o.Xtr(MB_idx,:)';
-                    if o.BatchNormType ~= "none"
+                    if ~strcmp(o.BatchNormType,"none")
                         x = normalize(x,1,o.BatchNormType); % dim=2; normalize each feature
                     end
                     y = o.Ytr(MB_idx,:)';
@@ -154,12 +168,12 @@ classdef MSOFNNplus
                     % MSE_it(iteration) = mse(yhat_MB,y);
                     % plot(1:iteration,MSE_it)
                     % drawnow
-                    % yhat(:,miniBatch_idx) = yMB;
+                    % mse(yhat_MB,y)
                 end
 
                 %%% epoch - results
                 MSE_ep(epoch) = mse(o.Ytr,yhat');
-                disp([epoch, MSE_ep(epoch)])
+                disp([epoch, MSE_ep(epoch) yhat(10) o.Ytr(10)])
             end
             [bestMSE,bestIdx] = min(MSE_ep);
             meanMSE = mean(MSE_ep);
@@ -180,7 +194,7 @@ classdef MSOFNNplus
                 Xtest = Xtest';
             end
 
-            if net.BatchNormType ~= "none"
+            if ~strcmp(net.BatchNormType, "none")
                 Xtest = normalize(Xtest,2,net.BatchNormType); % dim=2; normalize each feature
             end
 
@@ -190,12 +204,9 @@ classdef MSOFNNplus
                 lambda =  net.get_lam(x, net.Layer{l}, rules);
                 x = net.get_layerOutput(net.Layer{l}, x, lambda);
             end
-            yhat = x;
+            yhat = x';
 
             if exist("Ytest","var")
-                if size(Ytest,1) ~= net.n_nodes(end)
-                    Ytest = Ytest';
-                end
                 err.MSE = mse(yhat,Ytest);
                 err.RMSE = sqrt(err.MSE);
                 STD = std(Ytest);%?
@@ -222,6 +233,10 @@ classdef MSOFNNplus
             o.AF_AX = cell(1,o.n_Layer);
             o.AFp_AX = cell(1,o.n_Layer);
             for l = 1:numel(o.Layer)
+                % x = (x - o.minX) ./ (o.maxX - o.minX);
+                % y = (y - minY) ./ (maxY - minY);
+                % x = normalize(x);
+
                 % each data in mini_batch
                 for k = 1:size(x,2)
                     o.Layer{l} = o.add_or_update_rule(o.Layer{l}, x(:,k), o.dataSeenCounter+k);
@@ -230,18 +245,18 @@ classdef MSOFNNplus
 
                 % for backward process
                 n = 1:o.Layer{l}.N;
-                o.lambda_MB{l} =  o.get_lam(x,o.Layer{l},n); % (rule,MB)
-                taw_nl = o.get_taw(o.Layer{l},n); % (rule,1)
-                pxt = 2 * ( reshape(o.Layer{l}.P(:,n),[],1,n(end)) - x ) ./ reshape(taw_nl,1,1,n(end)); % (Ml,MB,rule)
-                o.DlamDx{l} = reshape(o.lambda_MB{l}',1,[],n(end)) .* (pxt - sum(pxt,3)); % (Ml,MB,rule)
+                o.lambda_MB{l} =  o.get_lam(x,o.Layer{l},n); % (N,MB)
+                taw_nl = o.get_taw(o.Layer{l},n); % (N,1)
+                pxt = 2 * ( reshape(o.Layer{l}.P(:,n),[],1,n(end)) - x ) ./ reshape(taw_nl,1,1,n(end)); % (M,MB,N)
+                lam_1MBn = reshape(o.lambda_MB{l}',1,[],n(end)); % (1,MB,N)
+                o.DlamDx{l} = lam_1MBn .* (pxt - sum(lam_1MBn.*pxt,3)); % (M,MB,N)
 
                 % determin input of next layer
                 [x, AfAx, AfpAx] = o.get_layerOutput(o.Layer{l}, x, o.lambda_MB{l});
-                o.n_rulePerLayer(l) = o.Layer{l}.N;
 
                 % for backward process
-                o.AF_AX{l} = pagetranspose(reshape(AfAx', size(AfAx,2), o.Layer{l}.W, [])); % (Wl*Nl,MB) -> (Wl,MB,Nl)
-                o.AFp_AX{l} = pagetranspose(reshape(AfpAx', size(AfpAx,2), o.Layer{l}.W, [])); % (Wl*Nl,MB) -> (Wl,MB,Nl)
+                o.AF_AX{l} = pagetranspose(reshape(AfAx', size(AfAx,2), o.Layer{l}.W, [])); % (W*N,MB) -> (W,MB,N)
+                o.AFp_AX{l} = pagetranspose(reshape(AfpAx', size(AfpAx,2), o.Layer{l}.W, [])); % (W*N,MB) -> (W,MB,N)
 
             end
             y = x;    % last output of layers
@@ -283,11 +298,17 @@ classdef MSOFNNplus
 
         % ------------------------ INITIALIZE RULE  ------------------------
         % used in @add_or_update_rule
-        function l = init_rule(~,l,xk,SEN_xk)
+        function l = init_rule(o,l,xk,SEN_xk)
             % create new cluster
             l.N = l.N + 1;
+            o.n_rulePerLayer(l.NO) = l.N;
             % Conceqent parameters
-            l.A = [l.A ; randi([0,1], l.W, l.M+1) / (l.M + 1)];
+            switch o.WeightInitializationType
+                case "xavier"
+                l.A = [l.A ; normrnd(0,2 / (l.M+1 + l.W), l.W, l.M+1)];
+                otherwise
+                l.A = [l.A ; randi([0,1], l.W, l.M+1) / (l.M + 1)];
+            end
             % Prototype (Anticident parameters)
             l.P(1:l.M, l.N) = xk;
             % Cluster Center
@@ -318,7 +339,7 @@ classdef MSOFNNplus
 
         %%  ------------------------- LAYER OUTPUT -------------------------
         % used in @forward
-        function [y,AfAx,AfpAx] = get_layerOutput(o,l,x,lambda)
+        function [y,yn,AF_prim] = get_layerOutput(o,l,x,lambda)
             % y_l = sum(lam_nl * y_nl)
             % y_nl = AF(A_nl * xbar_l)
 
@@ -328,18 +349,27 @@ classdef MSOFNNplus
 
             % tic
             %%% SOLUTION 1
-            [AfAx,AfpAx] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
-            ynl = reshape(AfAx,l.W*l.N,1,[]); % (Wl*Nl,1,MB)
-            lam_l = zeros(l.W, l.W*l.N, batch_size);
-            for k = 1:batch_size
-                for n = 1:l.N
-                    lam_l(:,(n-1)*l.W+1:n*l.W,k) = diag(ones(1,l.W)*lambda(n,k));
-                end
+            % y = sum(lamn-yn,n)
+            % lamn_yn = lamn .* yn
+            % yn = AF(An*X)
+            if max(l.A,[],"all") > 1e1
+                max(l.A,[],"all")
+                error("A big")
             end
-            y = reshape(pagemtimes(lam_l,ynl),[],batch_size);
+            [yn,AF_prim] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
+            lamn_yn = repelem(lambda,l.W,1) .* yn;
+            y = reshape(sum(reshape(reshape(lamn_yn,l.W,[]), l.W,l.N,[]),2), l.W,[]);
+            % ynl = reshape(AfAx,l.W*l.N,1,[]); % (Wl*Nl,1,MB)
+            % lam_l = zeros(l.W, l.W*l.N, batch_size);
+            % for k = 1:batch_size
+            %     for n = 1:l.N
+            %         lam_l(:,(n-1)*l.W+1:n*l.W,k) = diag(ones(1,l.W)*lambda(n,k));
+            %     end
+            % end
+            % y = reshape(pagemtimes(lam_l,ynl),[],batch_size);
 
             if sum(isnan(y),"all") || sum(isinf(y),"all")
-                0
+                error("y inf nan")
             end
 
         end
@@ -350,67 +380,106 @@ classdef MSOFNNplus
             DeDy = y_hat - y_target;  % (wl,MB)
             % ek = DeDy' * DeDy / 2;
 
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+            DeDA_nk = cell(max(o.n_rulePerLayer),o.n_Layer);
             d = cell(1,o.n_Layer);
-            d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
-
-            % Rule/N on third dimention
-            % MB on forth dimention
-            for  l = o.n_Layer : -1 : 1
-
-                % (M,MB,N) -> (M,1,N,MB)
-                DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
-                % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
-                AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
-                % (N,MB) -> (1,1,N,MB)
-                lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
-                % (W,MB,N) -> (W,1,N,MB)
-                AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
-                % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
-                A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
-
-                % save param
-                d_AFp_4D = d{l} .* AFp_4D;
-
-                % eq(17) => (W,M+1,N,MB)
-                DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
-                % mean => (W,M+1,N)
-                % DeDA = mean(DeDA,4); % mean of error of mini batch
-                DeDA = sum(DeDA,4); % sum of error of mini batch
-                % reshape => (W*N,M+1)
-                DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
-
-                %%% Adam Algorithm
-                if strcmp(o.solverName,"Adam")
-                    if ~isscalar(o.adapar.m{l})
-                        extraMtx = ones(size(DeDA,1)-size(o.adapar.m{l},1),size(DeDA,2));
-                        o.adapar.m{l} = [o.adapar.m{l}; extraMtx * o.adapar.ini_m];
-                        o.adapar.v{l} = [o.adapar.v{l}; extraMtx * o.adapar.ini_m];
+            for k = 1:size(DeDy,2)
+                d{o.n_Layer}(:,k) = y_hat(:,k) - y_target(:,k);
+                for l = o.n_Layer : -1 : 1
+                    xbar_k = o.Layer{l}.X(:,k);
+                    taw_nl = o.get_taw(o.Layer{l},1:o.Layer{l}.N); % (rule,1)
+                    pxt_k = 2 * (o.Layer{l}.P(:,1:o.Layer{l}.N) - xbar_k(2:end)) ./ taw_nl(1:o.Layer{l}.N)'.^2;
+                    lam_k = o.lambda_MB{l}(1:o.Layer{l}.N,k)';
+                    if l>1
+                        d{l-1}(:,k) = zeros(o.Layer{l-1}.W,1);
                     end
-                    o.adapar.m{l} = o.adapar.b1 * o.adapar.m{l} + (1-o.adapar.b1) * DeDA;
-                    o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
-
-                    % or Algorithm 1
-                    % mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
-                    % vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
-                    % DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
-
-                    % or Algorithm 2
-                    o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
-                    lr = o.LearningRate
-                    DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
+                    for n = 1:o.Layer{l}.N
+                        DlamDx_n = lam_k(n) * (pxt_k(:,n)-sum(lam_k.*pxt_k,2));
+                        A_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:);
+                        [AF,AFp] = ActFun.(o.ActivationFunction(l))(A_n*xbar_k);
+                        A_tild_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,2:end);
+                        DeDA_nk{n,l}(:,:,k) = lam_k(n) * (d{l}(:,k) .* AFp) * xbar_k';
+                        if l>1
+                            d{l-1}(:,k) = d{l-1}(:,k) + ...
+                                DlamDx_n * AF' * d{l}(:,k) + ...
+                                lam_k(n) * A_tild_n' * (d{l}(:,k) .* AFp);
+                        end
+                    end
                 end
-
-                % update A
-                o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
-
-                if sum(isinf(o.Layer{l}.A),"all")
-                    0
-                end
-
-                if l == 1, break, end
-                % eq(18) => (W,1,N,MB) : find 'd' of previous layer
-                d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
             end
+            for l = 1:o.n_Layer
+                for n = 1:o.Layer{l}.N
+                    DeDA_nl = sum(DeDA_nk{n,l},3);
+                    o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) = ...
+                        o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) + ...
+                        o.LearningRate * DeDA_nl;
+                end
+            end
+
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+            % d = cell(1,o.n_Layer);
+            % d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
+            % 
+            % % Rule/N on third dimention
+            % % MB on forth dimention
+            % for  l = o.n_Layer : -1 : 1
+            % 
+            %     % (M,MB,N) -> (M,1,N,MB)
+            %     DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
+            %     % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
+            %     AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
+            %     % (N,MB) -> (1,1,N,MB)
+            %     lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
+            %     % (W,MB,N) -> (W,1,N,MB)
+            %     AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
+            %     % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
+            %     A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
+            % 
+            %     % save param
+            %     d_AFp_4D = d{l} .* AFp_4D;
+            % 
+            %     % eq(17) => (W,M+1,N,MB)
+            %     DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
+            %     % mean => (W,M+1,N)
+            %     % DeDA = mean(DeDA,4); % mean of error of mini batch
+            %     DeDA = sum(DeDA,4); % sum of error of mini batch
+            %     % reshape => (W*N,M+1)
+            %     DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
+            % 
+            %     %%% Adam Algorithm
+            %     if strcmp(o.solverName,"Adam")
+            %         if ~isscalar(o.adapar.m{l})
+            %             extraMtx = ones(size(DeDA,1)-size(o.adapar.m{l},1),size(DeDA,2));
+            %             o.adapar.m{l} = [o.adapar.m{l}; extraMtx * o.adapar.ini_m];
+            %             o.adapar.v{l} = [o.adapar.v{l}; extraMtx * o.adapar.ini_m];
+            %         end
+            %         o.adapar.m{l} = o.adapar.b1 * o.adapar.m{l} + (1-o.adapar.b1) * DeDA;
+            %         o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
+            % 
+            %         % or Algorithm 1
+            %         % mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
+            %         % vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
+            %         % DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
+            % 
+            %         % or Algorithm 2
+            %         o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
+            %         lr = o.LearningRate
+            %         DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
+            %     end
+            % 
+            %     % update A
+            %     o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
+            % 
+            %     if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
+            %         0
+            %     end
+            % 
+            %     if l == 1, break, end
+            %     % eq(18) => (W,1,N,MB) : find 'd' of previous layer
+            %     d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
+            % end
 
         end
 
@@ -439,25 +508,23 @@ classdef MSOFNNplus
             %                              SEN(x(m,n,1)), ..., SEN(x(m,n,p))]
 
             % tic
-            [~,nRule,nData] = size(x);
-            out = zeros(nRule,nData);
-            for k = 1:nData
-                for n = 1:nRule
-                    out(n,k) = norm(x(:,n,k)).^2;
-                end
-            end
+            % [~,nRule,nData] = size(x);
+            % out = zeros(nRule,nData);
+            % for k = 1:nData
+            %     for n = 1:nRule
+            %         out(n,k) = norm(x(:,n,k)).^2;
+            %     end
+            % end
             % toc
 
 
             % tic
-            % sq = sqrt(pagemtimes(pagetranspose(x),x));
-            % out = zeros(size(x,2),size(x,3));
-            % for i = 1:size(x,3)
-            %     out(:,i) = diag(sq(:,:,i)).^2;
-            % end
+            sq = sqrt(pagemtimes(pagetranspose(x),x));
+            out = zeros(size(x,2),size(x,3));
+            for i = 1:size(x,3)
+                out(:,i) = diag(sq(:,:,i)).^2;
+            end
             % toc
-            % prod(prod(out1 == out))
-            % out1 == out
         end
 
         % ------------------------ FIRING STRENGTH ------------------------
@@ -489,39 +556,6 @@ classdef MSOFNNplus
             D = exp(- o.squEucNorm(x - l.P(1:l.M,n)) ./ o.get_taw(l,n).^2);
         end
 
-        % ---------------------- ACTIVATION FUNCTION ----------------------
-        % function out = AF(o,in)
-        %     switch o.ActivationFunction
-        %         case "Sigmoid"
-        %             out = 1 ./ (1 + exp(-in));
-        %         case "Tanh"
-        %             out =
-        %         case "Relu"
-        %             out = max(in,0);
-        %         case "LeakyRelu"
-        %             alpha = 0.01;
-        %             out = max(in * alpha, in);
-        %     end
-        % end
-
-        % -------------------------- AF_derivative --------------------------
-        % function out = AF_derivative(o,in)
-        %     switch o.ActivationFunction
-        %         case "Sigmoid"
-        %             out = in .* (1 - in);
-        %         case "Relu"
-        %             in(in >= 0) = 1;
-        %             in(in < 0) = 0;
-        %             out = in;
-        %         case "LeakyRelu"
-        %             alpha = 0.01;
-        %             in(in > 0) = 1;
-        %             in(in < 0) = 0;
-        %             out = in;
-        %             out = max(in * alpha, in);
-        %     end
-        % end
-
         % ---------------------- CONSTRUCT VARIABLES ----------------------
         % for more speed
         function o = construct_vars(o)
@@ -534,16 +568,16 @@ classdef MSOFNNplus
                 o.Layer{l}.NO = l;
                 o.Layer{l}.M = o.n_nodes(l);
                 o.Layer{l}.W = o.n_nodes(l+1);
-                o.Layer{l}.gMu = inf(o.Layer{l}.M, 1);
-                o.Layer{l}.gX = inf;
+                o.Layer{l}.gMu = zeros(o.Layer{l}.M, 1); %inf
+                o.Layer{l}.gX = zeros; %inf
                 o.Layer{l}.N = 0;
                 o.Layer{l}.taw = zeros(max_rule/2, 1); % /2 ?
                 o.Layer{l}.CS = 0;
-                o.Layer{l}.Cc = inf(o.Layer{l}.M, max_rule/2); % /2 ?
-                o.Layer{l}.CX = inf(1, max_rule/2); % /2 ?
-                o.Layer{l}.P = inf(o.Layer{l}.M, max_rule/2); % /2 ?
+                o.Layer{l}.Cc = zeros(o.Layer{l}.M, max_rule/2); % /2 ? %inf
+                o.Layer{l}.CX = zeros(1, max_rule/2); % /2 ? %inf
+                o.Layer{l}.P = zeros(o.Layer{l}.M, max_rule/2); % /2 ? %inf
                 o.Layer{l}.A = [];
-                o.Layer{l}.X = inf(o.Layer{l}.M + 1, o.MiniBatchSize);
+                o.Layer{l}.X = zeros(o.Layer{l}.M + 1, o.MiniBatchSize); %inf
             end
             o.n_rulePerLayer = zeros(1, o.n_Layer);
             o.lambda_MB = cell(1,o.n_Layer);

@@ -1,18 +1,17 @@
 clear
-%%
 clc
 %%
-load mgdata.dat
-time = mgdata(:,1);
-x = mgdata(:, 2);
-for t = 118:1117
-    Data(t-117,:) = [x(t-18) x(t-12) x(t-6) x(t) x(t+6)];
-end
-Xtr = Data(1:800, 1:end-1);
-Ytr = Data(1:800, end);
-Xte = Data(801:end, 1:end-1);
-Yte = Data(801:end, end);
-clear Data x t mgdata time
+% load mgdata.dat
+% time = mgdata(:,1);
+% x = mgdata(:, 2);
+% for t = 118:1117
+%     Data(t-117,:) = [x(t-18) x(t-12) x(t-6) x(t) x(t+6)];
+% end
+% Xtr = Data(1:800, 1:end-1);
+% Ytr = Data(1:800, end);
+% Xte = Data(801:end, 1:end-1);
+% Yte = Data(801:end, end);
+% clear Data x t mgdata time
 %%
 load mackey_0.1.mat
 for k = 201:3200
@@ -36,12 +35,13 @@ Yte = data(idx(197:end),8);
 %% construct neuro-fuzzy network
 clc
 net = MSOFNNplus(Xtr,Ytr,3,...
-    "ActivationFunction", ["relu","Sigmoid"],...
+    "ActivationFunction", "sig",...
     "DensityThreshold", exp(-3),...
-    "MaxEpoch", 200,...
+    "MaxEpoch", 1000,...
     "BatchNormType", "none",...
-    "LearningRate", 1,...
+    "LearningRate", 0.01,...
     "SolverName", "sgd",...
+    "WeightInitializationType", "none",...
     "MiniBatchSize", 32,...
     "adampar_beta1", 0.9,...
     "adampar_beta2", 0.999,...
@@ -57,4 +57,8 @@ trained_net = net.train
 toc
 
 % Test
-[~,err] = trained_net.test(Xte,Yte)
+[yhat,err] = trained_net.test(Xte,Yte);
+disp(err)
+plot(Yte)
+hold on
+plot(yhat')

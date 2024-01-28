@@ -8,8 +8,13 @@ classdef ActFun
             % – Changes are constant for error correction.
             % Cons
             % – Limited modeling capacity due to linearity.
+            arguments
+                x
+                a = 1
+                c = 0
+            end
             y = a * x + c;
-            yp = a;
+            yp = a*ones(size(x));
         end
 
         function [y,yp] = ReLU(x)
