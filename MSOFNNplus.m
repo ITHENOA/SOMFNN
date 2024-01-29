@@ -136,8 +136,8 @@ classdef MSOFNNplus
             % maxX = max(o.Xtr)';
             % minY = min(o.Ytr);
             % maxY = max(o.Ytr); 
-            o.Xtr = normalize(o.Xtr,1,"range");
-            o.Ytr = normalize(o.Ytr,1,"range");
+            o.Xtr = normalize(o.Xtr,2,"range");
+            o.Ytr = normalize(o.Ytr,2,"range");
             iteration = 0;
             MSE_ep = zeros(1,o.MaxEpoch);
             %%%%%%%% epoch %%%%%%%%
@@ -173,7 +173,7 @@ classdef MSOFNNplus
 
                 %%% epoch - results
                 MSE_ep(epoch) = mse(o.Ytr,yhat');
-                disp([epoch, MSE_ep(epoch) yhat(10) o.Ytr(10)])
+                disp([epoch, MSE_ep(epoch) yhat(20) o.Ytr(20)])
             end
             [bestMSE,bestIdx] = min(MSE_ep);
             meanMSE = mean(MSE_ep);
@@ -267,20 +267,26 @@ classdef MSOFNNplus
         function l = add_or_update_rule(o,l,xk,dataSeen)
             % l : Layer struct : o.Layer{desire}
             % xk : one data : (#feature,1)
-            SEN_xk = norm(xk).^2; % Square Eucdulian Norm of xk
+            SEN_xk = o.squEucNorm(xk); % Square Eucdulian Norm of xk
 
             m = 1:l.M;
             n = 1:l.N;
+
+            % update global information
+            l.gMu(m) = l.gMu(m) + (xk - l.gMu(m)) / dataSeen;
+            l.gX = l.gX + (SEN_xk - l.gX) / dataSeen;
+            % l.GloDelta = abs(o.squEucNorm(l.gMu(m)) - l.gX);
+
             if l.N == 0 % Stage(0)
                 %%%%% ADD(init) %%%%%
-                l.gMu(m) = xk;
-                l.gX = SEN_xk;
                 l = o.init_rule(l,xk,SEN_xk);
+                switch o.WeightInitializationType
+                    case "xavier"
+                        l.A = [l.A ; normrnd(0,2 / (l.M+1 + l.W), l.W, l.M+1)];
+                    otherwise
+                        l.A = [l.A ; randi([0,1], l.W, l.M+1) / (l.M + 1)];
+                end
             else % Stage(1)
-                % update global information
-                l.gMu(m) = l.gMu(m) + (xk - l.gMu(m)) / dataSeen;
-                l.gX = l.gX + (SEN_xk - l.gX) / dataSeen;
-
                 % determine density of xk in all rules in this layer : less distance has more density
                 Dl = o.get_dens(xk,l,n);
 
@@ -289,6 +295,7 @@ classdef MSOFNNplus
                 if max_dens < o.DensityThreshold
                     %%%%% ADD %%%%%
                     l = o.init_rule(l,xk,SEN_xk);
+                    l.A = [l.A; mean(pagetranspose(reshape(l.A',l.M+1,l.W,[])),3)];
                 else
                     %%%%% UPDATE %%%%%
                     l = o.update_rule(l,n_star,xk,SEN_xk);
@@ -303,20 +310,23 @@ classdef MSOFNNplus
             l.N = l.N + 1;
             o.n_rulePerLayer(l.NO) = l.N;
             % Conceqent parameters
-            switch o.WeightInitializationType
-                case "xavier"
-                l.A = [l.A ; normrnd(0,2 / (l.M+1 + l.W), l.W, l.M+1)];
-                otherwise
-                l.A = [l.A ; randi([0,1], l.W, l.M+1) / (l.M + 1)];
-            end
+            % switch o.WeightInitializationType
+            %     case "xavier"
+            %     l.A = [l.A ; normrnd(0,2 / (l.M+1 + l.W), l.W, l.M+1)];
+            %     otherwise
+            %     l.A = [l.A ; randi([0,1], l.W, l.M+1) / (l.M + 1)];
+            % end
             % Prototype (Anticident parameters)
             l.P(1:l.M, l.N) = xk;
+
             % Cluster Center
-            l.Cc(1:l.M, l.N) = xk;
+            l.Cc(:, l.N) = xk;
             % Center Square Eucidulian Norm
             l.CX(l.N) = SEN_xk;
             % Number of data in Cluster
             l.CS(l.N) = 1;
+            % Local information
+            % l.LocDelta(l.N) = abs(o.squEucNorm(l.Cc(:, l.N)) - l.CX(l.N));
         end
 
         % -------------------------- UPDATE RULE  --------------------------
@@ -352,9 +362,9 @@ classdef MSOFNNplus
             % y = sum(lamn-yn,n)
             % lamn_yn = lamn .* yn
             % yn = AF(An*X)
-            if max(l.A,[],"all") > 1e1
+            if max(l.A,[],"all") > 1e1*20
                 max(l.A,[],"all")
-                error("A big")
+                warning("A big")
             end
             [yn,AF_prim] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
             lamn_yn = repelem(lambda,l.W,1) .* yn;
@@ -369,7 +379,7 @@ classdef MSOFNNplus
             % y = reshape(pagemtimes(lam_l,ynl),[],batch_size);
 
             if sum(isnan(y),"all") || sum(isinf(y),"all")
-                error("y inf nan")
+                warning("y inf nan")
             end
 
         end
@@ -382,104 +392,104 @@ classdef MSOFNNplus
 
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-            DeDA_nk = cell(max(o.n_rulePerLayer),o.n_Layer);
-            d = cell(1,o.n_Layer);
-            for k = 1:size(DeDy,2)
-                d{o.n_Layer}(:,k) = y_hat(:,k) - y_target(:,k);
-                for l = o.n_Layer : -1 : 1
-                    xbar_k = o.Layer{l}.X(:,k);
-                    taw_nl = o.get_taw(o.Layer{l},1:o.Layer{l}.N); % (rule,1)
-                    pxt_k = 2 * (o.Layer{l}.P(:,1:o.Layer{l}.N) - xbar_k(2:end)) ./ taw_nl(1:o.Layer{l}.N)'.^2;
-                    lam_k = o.lambda_MB{l}(1:o.Layer{l}.N,k)';
-                    if l>1
-                        d{l-1}(:,k) = zeros(o.Layer{l-1}.W,1);
-                    end
-                    for n = 1:o.Layer{l}.N
-                        DlamDx_n = lam_k(n) * (pxt_k(:,n)-sum(lam_k.*pxt_k,2));
-                        A_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:);
-                        [AF,AFp] = ActFun.(o.ActivationFunction(l))(A_n*xbar_k);
-                        A_tild_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,2:end);
-                        DeDA_nk{n,l}(:,:,k) = lam_k(n) * (d{l}(:,k) .* AFp) * xbar_k';
-                        if l>1
-                            d{l-1}(:,k) = d{l-1}(:,k) + ...
-                                DlamDx_n * AF' * d{l}(:,k) + ...
-                                lam_k(n) * A_tild_n' * (d{l}(:,k) .* AFp);
-                        end
-                    end
-                end
-            end
-            for l = 1:o.n_Layer
-                for n = 1:o.Layer{l}.N
-                    DeDA_nl = sum(DeDA_nk{n,l},3);
-                    o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) = ...
-                        o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) + ...
-                        o.LearningRate * DeDA_nl;
-                end
-            end
+            % DeDA_nk = cell(max(o.n_rulePerLayer),o.n_Layer);
+            % d = cell(1,o.n_Layer);
+            % for k = 1:size(DeDy,2)
+            %     d{o.n_Layer}(:,k) = y_hat(:,k) - y_target(:,k);
+            %     for l = o.n_Layer : -1 : 1
+            %         xbar_k = o.Layer{l}.X(:,k);
+            %         taw_nl = o.get_taw(o.Layer{l},1:o.Layer{l}.N); % (rule,1)
+            %         pxt_k = 2 * (o.Layer{l}.P(:,1:o.Layer{l}.N) - xbar_k(2:end)) ./ taw_nl(1:o.Layer{l}.N)';
+            %         lam_k = o.lambda_MB{l}(1:o.Layer{l}.N,k)';
+            %         if l>1
+            %             d{l-1}(:,k) = zeros(o.Layer{l-1}.W,1);
+            %         end
+            %         for n = 1:o.Layer{l}.N
+            %             DlamDx_n = lam_k(n) * (pxt_k(:,n)-sum(lam_k.*pxt_k,2));
+            %             A_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:);
+            %             [AF,AFp] = ActFun.(o.ActivationFunction(l))(A_n*xbar_k);
+            %             A_tild_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,2:end);
+            %             DeDA_nk{n,l}(:,:,k) = lam_k(n) * (d{l}(:,k) .* AFp) * xbar_k';
+            %             if l>1
+            %                 d{l-1}(:,k) = d{l-1}(:,k) + ...
+            %                     DlamDx_n * AF' * d{l}(:,k) + ...
+            %                     lam_k(n) * A_tild_n' * (d{l}(:,k) .* AFp);
+            %             end
+            %         end
+            %     end
+            % end
+            % for l = 1:o.n_Layer
+            %     for n = 1:o.Layer{l}.N
+            %         DeDA_nl = sum(DeDA_nk{n,l},3);
+            %         o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) = ...
+            %             o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) + ...
+            %             o.LearningRate * DeDA_nl;
+            %     end
+            % end
 
             %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-            % d = cell(1,o.n_Layer);
-            % d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
-            % 
-            % % Rule/N on third dimention
-            % % MB on forth dimention
-            % for  l = o.n_Layer : -1 : 1
-            % 
-            %     % (M,MB,N) -> (M,1,N,MB)
-            %     DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
-            %     % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
-            %     AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
-            %     % (N,MB) -> (1,1,N,MB)
-            %     lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
-            %     % (W,MB,N) -> (W,1,N,MB)
-            %     AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
-            %     % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
-            %     A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
-            % 
-            %     % save param
-            %     d_AFp_4D = d{l} .* AFp_4D;
-            % 
-            %     % eq(17) => (W,M+1,N,MB)
-            %     DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
-            %     % mean => (W,M+1,N)
-            %     % DeDA = mean(DeDA,4); % mean of error of mini batch
-            %     DeDA = sum(DeDA,4); % sum of error of mini batch
-            %     % reshape => (W*N,M+1)
-            %     DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
-            % 
-            %     %%% Adam Algorithm
-            %     if strcmp(o.solverName,"Adam")
-            %         if ~isscalar(o.adapar.m{l})
-            %             extraMtx = ones(size(DeDA,1)-size(o.adapar.m{l},1),size(DeDA,2));
-            %             o.adapar.m{l} = [o.adapar.m{l}; extraMtx * o.adapar.ini_m];
-            %             o.adapar.v{l} = [o.adapar.v{l}; extraMtx * o.adapar.ini_m];
-            %         end
-            %         o.adapar.m{l} = o.adapar.b1 * o.adapar.m{l} + (1-o.adapar.b1) * DeDA;
-            %         o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
-            % 
-            %         % or Algorithm 1
-            %         % mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
-            %         % vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
-            %         % DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
-            % 
-            %         % or Algorithm 2
-            %         o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
-            %         lr = o.LearningRate
-            %         DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
-            %     end
-            % 
-            %     % update A
-            %     o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
-            % 
-            %     if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
-            %         0
-            %     end
-            % 
-            %     if l == 1, break, end
-            %     % eq(18) => (W,1,N,MB) : find 'd' of previous layer
-            %     d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
-            % end
+            d = cell(1,o.n_Layer);
+            d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
+
+            % Rule/N on third dimention
+            % MB on forth dimention
+            for  l = o.n_Layer : -1 : 1
+
+                % (M,MB,N) -> (M,1,N,MB)
+                DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
+                % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
+                AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
+                % (N,MB) -> (1,1,N,MB)
+                lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
+                % (W,MB,N) -> (W,1,N,MB)
+                AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
+                % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
+                A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
+
+                % save param
+                d_AFp_4D = d{l} .* AFp_4D;
+
+                % eq(17) => (W,M+1,N,MB)
+                DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
+                % mean => (W,M+1,N)
+                % DeDA = mean(DeDA,4); % mean of error of mini batch
+                DeDA = sum(DeDA,4); % sum of error of mini batch
+                % reshape => (W*N,M+1)
+                DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
+
+                %%% Adam Algorithm
+                if strcmp(o.solverName,"Adam")
+                    if ~isscalar(o.adapar.m{l})
+                        extraMtx = ones(size(DeDA,1)-size(o.adapar.m{l},1),size(DeDA,2));
+                        o.adapar.m{l} = [o.adapar.m{l}; extraMtx * o.adapar.ini_m];
+                        o.adapar.v{l} = [o.adapar.v{l}; extraMtx * o.adapar.ini_m];
+                    end
+                    o.adapar.m{l} = o.adapar.b1 * o.adapar.m{l} + (1-o.adapar.b1) * DeDA;
+                    o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
+
+                    % or Algorithm 1
+                    % mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
+                    % vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
+                    % DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
+
+                    % or Algorithm 2
+                    o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
+                    lr = o.LearningRate
+                    DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
+                end
+
+                % update A
+                o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
+
+                if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
+                    0
+                end
+
+                if l == 1, break, end
+                % eq(18) => (W,1,N,MB) : find 'd' of previous layer
+                d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
+            end
 
         end
 
@@ -494,7 +504,10 @@ classdef MSOFNNplus
             %   OUTPUT
             % taw : for Layer{l} :(#rule,1)
 
-            taw = sqrt(( abs(l.gX - norm(l.gMu(1:l.M))^2) + abs(l.CX(n)' - o.squEucNorm(l.Cc(1:l.M,n))) )/2);
+            taw = (( abs(l.gX - o.squEucNorm(l.gMu(1:l.M))) + abs(l.CX(n)' - o.squEucNorm(l.Cc(1:l.M,n))) )/2);
+            % if prod(taw == 0)
+            %     0
+            % end
             taw(taw == 0) = eps;
         end
 
@@ -508,23 +521,23 @@ classdef MSOFNNplus
             %                              SEN(x(m,n,1)), ..., SEN(x(m,n,p))]
 
             % tic
-            % [~,nRule,nData] = size(x);
-            % out = zeros(nRule,nData);
-            % for k = 1:nData
-            %     for n = 1:nRule
-            %         out(n,k) = norm(x(:,n,k)).^2;
-            %     end
-            % end
-            % toc
-
-
-            % tic
-            sq = sqrt(pagemtimes(pagetranspose(x),x));
-            out = zeros(size(x,2),size(x,3));
-            for i = 1:size(x,3)
-                out(:,i) = diag(sq(:,:,i)).^2;
+            [~,nRule,nData] = size(x);
+            out = zeros(nRule,nData);
+            for k = 1:nData
+                for n = 1:nRule
+                    out(n,k) = dot(x(:,n,k),x(:,n,k)');
+                end
             end
             % toc
+
+
+            % % tic
+            % sq = (pagemtimes(pagetranspose(x),x));
+            % out = zeros(size(x,2),size(x,3));
+            % for i = 1:size(x,3)
+            %     out(:,i) = diag(sq(:,:,i)).^2;
+            % end
+            % % toc
         end
 
         % ------------------------ FIRING STRENGTH ------------------------
@@ -553,7 +566,7 @@ classdef MSOFNNplus
 
             x = reshape(x,size(x,1),1,size(x,2));
             % less distance has more density
-            D = exp(- o.squEucNorm(x - l.P(1:l.M,n)) ./ o.get_taw(l,n).^2);
+            D = exp(- o.squEucNorm(x - l.P(1:l.M,n)) ./ o.get_taw(l,n));
         end
 
         % ---------------------- CONSTRUCT VARIABLES ----------------------
@@ -569,7 +582,7 @@ classdef MSOFNNplus
                 o.Layer{l}.M = o.n_nodes(l);
                 o.Layer{l}.W = o.n_nodes(l+1);
                 o.Layer{l}.gMu = zeros(o.Layer{l}.M, 1); %inf
-                o.Layer{l}.gX = zeros; %inf
+                o.Layer{l}.gX = zeros;%(o.Layer{l}.M, 1); %inf
                 o.Layer{l}.N = 0;
                 o.Layer{l}.taw = zeros(max_rule/2, 1); % /2 ?
                 o.Layer{l}.CS = 0;

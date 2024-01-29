@@ -60,7 +60,8 @@ classdef ActFun
             % – Addresses the vanishing gradient issue to some extent.
             % Cons
             % – Still prone to vanishing gradient problems.
-            y = 2 ./ (1 - exp(-2 * x)) - 1;
+            % y = 2 ./ (1 - exp(-2 * x)) - 1;
+            y = (exp(x) - exp(-x)) ./ (exp(x) + exp(-x));
             yp = 1 - y.^2;
         end
 
