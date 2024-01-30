@@ -201,6 +201,7 @@ classdef MSOFNNplus
                         MSE_val_best = errVal.mse;
                     end
                 end
+                if (epoch>5) && prod(MSE_ep(epoch-5:end) - MSE_ep(epoch)), break, end
             end
 
             if opts.validationPercent
