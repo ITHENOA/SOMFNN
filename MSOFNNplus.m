@@ -16,13 +16,14 @@ classdef MSOFNNplus
         solverName
         ActivationFunction
         WeightInitializationType
+        DataNormalize
         BatchNormType
         MSE_report
     end
     properties (Access=private)
         plot
-        Xtr
-        Ytr
+        Xtrain
+        Ytrain
         dataSeenCounter
         verbose
         n_data   % Number of training data
@@ -31,8 +32,8 @@ classdef MSOFNNplus
         DlamDx % {layer}(Ml,1)
         AFp_AX % derivative of AF : {layer}()
         adapar % parameters of Adam algorithm
-        minX
-        maxX
+        minYtr
+        maxYtr
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -51,12 +52,14 @@ classdef MSOFNNplus
                 opts.SolverName {mustBeTextScalar} = "SGD"
                 opts.WeightInitializationType {mustBeTextScalar} = "none"
                 opts.MiniBatchSize {mustBeInteger,mustBePositive} = 1
+                opts.DataNormalize = "none"
                 opts.adampar_epsilon = 1e-8
                 opts.adampar_beta1 = 0.9
                 opts.adampar_beta2 = 0.999
                 opts.adampar_m0 = 0
                 opts.adampar_v0 = 0
             end
+            opts.DataNormalize = validatestring(opts.DataNormalize,["none","X","XY"]);
             opts.BatchNormType = validatestring(opts.BatchNormType,["none","zscore"]);
             opts.SolverName = validatestring(opts.SolverName,["SGD","Adam","MiniBatchGD"]);
             opts.WeightInitializationType = validatestring(opts.WeightInitializationType,["none","xavier"]);
@@ -99,9 +102,11 @@ classdef MSOFNNplus
             o.ActivationFunction = opts.ActivationFunction;
             o.WeightInitializationType = opts.WeightInitializationType;
             o.BatchNormType = opts.BatchNormType;
+            o.DataNormalize = opts.DataNormalize;
             o.solverName = opts.SolverName;
             o.MiniBatchSize = opts.MiniBatchSize;
             o.n_data = size(Xtr, 1);
+            
 
             if strcmp(o.solverName,"Adam")
                 % Adam Parameters
@@ -126,24 +131,35 @@ classdef MSOFNNplus
             o = o.construct_vars();
 
             % save data
-            o.Xtr = Xtr;
-            o.Ytr = Ytr;
+            o.Xtrain = Xtr;
+            o.Ytrain = Ytr;
+            o.minYtr = min(Ytr);
+            o.maxYtr = max(Ytr);
         end
 
         %% ------------------------- Training -------------------------
-        function o = train(o)
-            % minX = min(o.Xtr)';
-            % maxX = max(o.Xtr)';
-            % minY = min(o.Ytr);
-            % maxY = max(o.Ytr); 
-            o.Xtr = normalize(o.Xtr,2,"range");
-            o.Ytr = normalize(o.Ytr,2,"range");
+        function trained_net = train(o,opts)
+            arguments
+                o
+                opts.validationPercent = 0
+            end
+            if opts.validationPercent
+                idx = randperm(size(o.Xtrain,1));
+                n_val = round(size(o.Xtrain,1) * opts.validationPercent);
+                Xval = o.Xtrain(idx(1:n_val),:);
+                Yval = o.Ytrain(idx(1:n_val),:);
+                o.Xtrain = o.Xtrain(idx(n_val+1:end),:);
+                o.Ytrain = o.Ytrain(idx(n_val+1:end),:);
+                MSE_val_best = inf;
+            end
+            [Xtr,Ytr] = o.dataNormalize(o.Xtrain,o.Ytrain);
+            
             iteration = 0;
             MSE_ep = zeros(1,o.MaxEpoch);
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
                 o.dataSeenCounter = 0;
-                yhat = zeros(size(o.Ytr))';
+                yhat = zeros(size(Ytr))';
 
                 shuffle_idx = randperm(o.n_data);
                 %%%%%%%%%%% iteration %%%%%%%%%%%
@@ -151,11 +167,11 @@ classdef MSOFNNplus
                     iteration = iteration + 1;
                     MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,o.n_data) );
 
-                    x = o.Xtr(MB_idx,:)';
+                    x = Xtr(MB_idx,:)';
                     if ~strcmp(o.BatchNormType,"none")
                         x = normalize(x,1,o.BatchNormType); % dim=2; normalize each feature
                     end
-                    y = o.Ytr(MB_idx,:)';
+                    y = Ytr(MB_idx,:)';
 
                     % Forward >> Backward
                     [o,yhat_MB] = o.main(x,y,iteration);
@@ -172,9 +188,28 @@ classdef MSOFNNplus
                 end
 
                 %%% epoch - results
-                MSE_ep(epoch) = mse(o.Ytr,yhat');
-                disp([epoch, MSE_ep(epoch) yhat(20) o.Ytr(20)])
+                mse(Ytr,yhat')
+                yhat = o.outputUnNormalize(yhat);
+                mse(o.Ytrain,yhat')
+                MSE_ep(epoch) = mse(o.Ytrain,yhat');
+                % disp([epoch, MSE_ep(epoch)])
+
+                if opts.validationPercent
+                    [~,errVal] = o.test(Xval,Yval);
+                    if (epoch>1) && (errVal.mse < MSE_val_best)
+                        netBest = o;
+                        MSE_val_best = errVal.mse;
+                    end
+                end
             end
+
+            if opts.validationPercent
+                trained_net.last = o;
+                trained_net.best = netBest;
+            else
+                trained_net = o;
+            end
+
             [bestMSE,bestIdx] = min(MSE_ep);
             meanMSE = mean(MSE_ep);
             o.MSE_report.Mean = meanMSE;
@@ -190,13 +225,12 @@ classdef MSOFNNplus
 
         %% ----------------------------- TEST -----------------------------
         function [yhat, err] = test(net,Xtest,Ytest)
-            if size(Xtest,1) ~= net.n_nodes(1)
-                Xtest = Xtest';
-            end
+            [Xtest,Ytest] = net.dataNormalize(Xtest,Ytest);
+            Xtest = Xtest';
 
-            if ~strcmp(net.BatchNormType, "none")
-                Xtest = normalize(Xtest,2,net.BatchNormType); % dim=2; normalize each feature
-            end
+            % if ~strcmp(net.BatchNormType, "none")
+            %     Xtest = normalize(Xtest,2,net.BatchNormType); % dim=2; normalize each feature
+            % end
 
             x = Xtest;
             for l = 1:net.n_Layer
@@ -204,7 +238,7 @@ classdef MSOFNNplus
                 lambda =  net.get_lam(x, net.Layer{l}, rules);
                 x = net.get_layerOutput(net.Layer{l}, x, lambda);
             end
-            yhat = x';
+            yhat = net.outputUnNormalize(x');
 
             if exist("Ytest","var")
                 err.MSE = mse(yhat,Ytest);
@@ -242,6 +276,7 @@ classdef MSOFNNplus
                     o.Layer{l} = o.add_or_update_rule(o.Layer{l}, x(:,k), o.dataSeenCounter+k);
                     o.Layer{l}.X(1:o.Layer{l}.M + 1, k) = [1;x(:,k)];
                 end
+                o.n_rulePerLayer(l) = o.Layer{l}.N;
 
                 % for backward process
                 n = 1:o.Layer{l}.N;
@@ -305,10 +340,9 @@ classdef MSOFNNplus
 
         % ------------------------ INITIALIZE RULE  ------------------------
         % used in @add_or_update_rule
-        function l = init_rule(o,l,xk,SEN_xk)
+        function l = init_rule(~,l,xk,SEN_xk)
             % create new cluster
             l.N = l.N + 1;
-            o.n_rulePerLayer(l.NO) = l.N;
             % Conceqent parameters
             % switch o.WeightInitializationType
             %     case "xavier"
@@ -362,10 +396,10 @@ classdef MSOFNNplus
             % y = sum(lamn-yn,n)
             % lamn_yn = lamn .* yn
             % yn = AF(An*X)
-            if max(l.A,[],"all") > 1e1*20
-                max(l.A,[],"all")
-                warning("A big")
-            end
+            % if max(l.A,[],"all") > 1e1*20
+                % max(l.A,[],"all")
+                % warning("A big")
+            % end
             [yn,AF_prim] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
             lamn_yn = repelem(lambda,l.W,1) .* yn;
             y = reshape(sum(reshape(reshape(lamn_yn,l.W,[]), l.W,l.N,[]),2), l.W,[]);
@@ -389,45 +423,6 @@ classdef MSOFNNplus
         function o = backward(o,y_hat,y_target,it)
             DeDy = y_hat - y_target;  % (wl,MB)
             % ek = DeDy' * DeDy / 2;
-
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-            % DeDA_nk = cell(max(o.n_rulePerLayer),o.n_Layer);
-            % d = cell(1,o.n_Layer);
-            % for k = 1:size(DeDy,2)
-            %     d{o.n_Layer}(:,k) = y_hat(:,k) - y_target(:,k);
-            %     for l = o.n_Layer : -1 : 1
-            %         xbar_k = o.Layer{l}.X(:,k);
-            %         taw_nl = o.get_taw(o.Layer{l},1:o.Layer{l}.N); % (rule,1)
-            %         pxt_k = 2 * (o.Layer{l}.P(:,1:o.Layer{l}.N) - xbar_k(2:end)) ./ taw_nl(1:o.Layer{l}.N)';
-            %         lam_k = o.lambda_MB{l}(1:o.Layer{l}.N,k)';
-            %         if l>1
-            %             d{l-1}(:,k) = zeros(o.Layer{l-1}.W,1);
-            %         end
-            %         for n = 1:o.Layer{l}.N
-            %             DlamDx_n = lam_k(n) * (pxt_k(:,n)-sum(lam_k.*pxt_k,2));
-            %             A_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:);
-            %             [AF,AFp] = ActFun.(o.ActivationFunction(l))(A_n*xbar_k);
-            %             A_tild_n = o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,2:end);
-            %             DeDA_nk{n,l}(:,:,k) = lam_k(n) * (d{l}(:,k) .* AFp) * xbar_k';
-            %             if l>1
-            %                 d{l-1}(:,k) = d{l-1}(:,k) + ...
-            %                     DlamDx_n * AF' * d{l}(:,k) + ...
-            %                     lam_k(n) * A_tild_n' * (d{l}(:,k) .* AFp);
-            %             end
-            %         end
-            %     end
-            % end
-            % for l = 1:o.n_Layer
-            %     for n = 1:o.Layer{l}.N
-            %         DeDA_nl = sum(DeDA_nk{n,l},3);
-            %         o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) = ...
-            %             o.Layer{l}.A((n-1)*o.Layer{l}.W+1:n*o.Layer{l}.W,:) + ...
-            %             o.LearningRate * DeDA_nl;
-            %     end
-            % end
-
-            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
             d = cell(1,o.n_Layer);
             d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
@@ -475,7 +470,7 @@ classdef MSOFNNplus
 
                     % or Algorithm 2
                     o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
-                    lr = o.LearningRate
+                    % lr = o.LearningRate
                     DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
                 end
 
@@ -483,7 +478,7 @@ classdef MSOFNNplus
                 o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
 
                 if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
-                    0
+                    warning
                 end
 
                 if l == 1, break, end
@@ -569,6 +564,22 @@ classdef MSOFNNplus
             D = exp(- o.squEucNorm(x - l.P(1:l.M,n)) ./ o.get_taw(l,n));
         end
 
+        % ------------------------ normalize ----------------------------
+        function [X,Y] = dataNormalize(o,X,Y)
+            if ~strcmp(o.DataNormalize,"none")
+                X = normalize(X,1,"range");
+            end
+            if strcmp(o.DataNormalize,"XY")
+                Y = (Y - o.minYtr) / (o.maxYtr-o.minYtr);
+            end
+        end
+        % ------------------------ UNnormalize ----------------------------
+        function Y = outputUnNormalize(o,Y)
+            if strcmp(o.DataNormalize,"XY")
+                Y = Y * (o.maxYtr-o.minYtr) + o.minYtr;
+            end
+        end
+
         % ---------------------- CONSTRUCT VARIABLES ----------------------
         % for more speed
         function o = construct_vars(o)
@@ -581,16 +592,16 @@ classdef MSOFNNplus
                 o.Layer{l}.NO = l;
                 o.Layer{l}.M = o.n_nodes(l);
                 o.Layer{l}.W = o.n_nodes(l+1);
-                o.Layer{l}.gMu = zeros(o.Layer{l}.M, 1); %inf
+                o.Layer{l}.gMu = (zeros(o.Layer{l}.M, 1)); %inf
                 o.Layer{l}.gX = zeros;%(o.Layer{l}.M, 1); %inf
                 o.Layer{l}.N = 0;
-                o.Layer{l}.taw = zeros(max_rule/2, 1); % /2 ?
+                o.Layer{l}.taw = (zeros(max_rule/2, 1)); % /2 ?
                 o.Layer{l}.CS = 0;
-                o.Layer{l}.Cc = zeros(o.Layer{l}.M, max_rule/2); % /2 ? %inf
+                o.Layer{l}.Cc = (zeros(o.Layer{l}.M, max_rule/2)); % /2 ? %inf
                 o.Layer{l}.CX = zeros(1, max_rule/2); % /2 ? %inf
-                o.Layer{l}.P = zeros(o.Layer{l}.M, max_rule/2); % /2 ? %inf
-                o.Layer{l}.A = [];
-                o.Layer{l}.X = zeros(o.Layer{l}.M + 1, o.MiniBatchSize); %inf
+                o.Layer{l}.P = (zeros(o.Layer{l}.M, max_rule/2)); % /2 ? %inf
+                o.Layer{l}.A = ([]);
+                o.Layer{l}.X = (zeros(o.Layer{l}.M + 1, o.MiniBatchSize)); %inf
             end
             o.n_rulePerLayer = zeros(1, o.n_Layer);
             o.lambda_MB = cell(1,o.n_Layer);
