@@ -152,7 +152,7 @@ classdef MSOFNNplus
                 o.Ytrain = o.Ytrain(idx(n_val+1:end),:);
                 MSE_val_best = inf;
             end
-            [Xtr,Ytr] = o.dataNormalize(o.Xtrain,o.Ytrain);
+            [Xtr,Ytr,maxY,minY] = o.dataNormalize(o.Xtrain,o.Ytrain);
             
             iteration = 0;
             MSE_ep = zeros(1,o.MaxEpoch);
@@ -161,11 +161,11 @@ classdef MSOFNNplus
                 o.dataSeenCounter = 0;
                 yhat = zeros(size(Ytr))';
 
-                shuffle_idx = randperm(o.n_data);
+                shuffle_idx = randperm(size(Xtr,1));
                 %%%%%%%%%%% iteration %%%%%%%%%%%
-                for it = 1 : ceil(o.n_data/o.MiniBatchSize)
+                for it = 1 : ceil(size(Xtr,1)/o.MiniBatchSize)
                     iteration = iteration + 1;
-                    MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,o.n_data) );
+                    MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,size(Xtr,1)) );
 
                     x = Xtr(MB_idx,:)';
                     if ~strcmp(o.BatchNormType,"none")
@@ -188,17 +188,15 @@ classdef MSOFNNplus
                 end
 
                 %%% epoch - results
-                mse(Ytr,yhat')
-                yhat = o.outputUnNormalize(yhat);
-                mse(o.Ytrain,yhat')
+                yhat = o.outputUnNormalize(yhat,maxY,minY);
                 MSE_ep(epoch) = mse(o.Ytrain,yhat');
-                % disp([epoch, MSE_ep(epoch)])
+                disp([epoch, MSE_ep(epoch)])
 
                 if opts.validationPercent
                     [~,errVal] = o.test(Xval,Yval);
-                    if (epoch>1) && (errVal.mse < MSE_val_best)
+                    if (epoch>1) && (errVal.MSE < MSE_val_best)
                         netBest = o;
-                        MSE_val_best = errVal.mse;
+                        MSE_val_best = errVal.MSE;
                     end
                 end
                 if (epoch>5) && prod(MSE_ep(epoch-5:end) - MSE_ep(epoch)), break, end
@@ -226,7 +224,7 @@ classdef MSOFNNplus
 
         %% ----------------------------- TEST -----------------------------
         function [yhat, err] = test(net,Xtest,Ytest)
-            [Xtest,Ytest] = net.dataNormalize(Xtest,Ytest);
+            [Xtest,Ytest,maxY,minY] = net.dataNormalize(Xtest,Ytest);
             Xtest = Xtest';
 
             % if ~strcmp(net.BatchNormType, "none")
@@ -239,7 +237,7 @@ classdef MSOFNNplus
                 lambda =  net.get_lam(x, net.Layer{l}, rules);
                 x = net.get_layerOutput(net.Layer{l}, x, lambda);
             end
-            yhat = net.outputUnNormalize(x');
+            yhat = net.outputUnNormalize(x',maxY,minY);
 
             if exist("Ytest","var")
                 err.MSE = mse(yhat,Ytest);
@@ -566,18 +564,20 @@ classdef MSOFNNplus
         end
 
         % ------------------------ normalize ----------------------------
-        function [X,Y] = dataNormalize(o,X,Y)
+        function [X,Y,maxY,minY] = dataNormalize(o,X,Y)
             if ~strcmp(o.DataNormalize,"none")
                 X = normalize(X,1,"range");
             end
             if strcmp(o.DataNormalize,"XY")
-                Y = (Y - o.minYtr) / (o.maxYtr-o.minYtr);
+                maxY = max(Y);
+                minY = min(Y);
+                Y = (Y - minY) / (maxY-minY);
             end
         end
         % ------------------------ UNnormalize ----------------------------
-        function Y = outputUnNormalize(o,Y)
+        function Y = outputUnNormalize(o,Y,maxY,minY)
             if strcmp(o.DataNormalize,"XY")
-                Y = Y * (o.maxYtr-o.minYtr) + o.minYtr;
+                Y = Y * (maxY-minY) + minY;
             end
         end
 

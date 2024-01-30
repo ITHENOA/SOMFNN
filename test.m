@@ -25,6 +25,8 @@ end
 clear X k
 %%
 data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN_new\dataset\auto_mpg_data (5).xlsx"));
+% data = table2array(readtable("C:\Users\Cib-Sabz\Documents\MATLAB\Fuzzy Logic - Fall 2023\Final Project\dataset\auto_mpg_data (5).xlsx"));
+% data = table2array(readtable("C:\Users\Cib-Sabz\Documents\MATLAB\Fuzzy Logic - Fall 2023\Final Project\MSOFNN-main2\dataset\auto_mpg_data (5).xlsx"));
 data(logical(sum(isnan(data),2)),:) = [];
 idx=randperm(size(data,1));
 Xtr = data(idx(1:196),1:7);
@@ -54,7 +56,7 @@ net = MSOFNNplus(Xtr,Ytr,3,...
 
 % Train
 tic
-[trained_net,best] = net.train("validationPercent",0.2);
+trained_net = net.train("validationPercent",0.2);
 toc
 
 %% Test
