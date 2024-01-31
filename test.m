@@ -15,12 +15,12 @@ clc
 %%
 load mackey_0.1.mat
 for k = 201:3200
-    Xtr(k-200,:) = [X(k-18) X(k-12) X(k-6)];
-    Ytr(k-200,:) = X(k);
+    Xtr(k-200,:) = [X(k-18) X(k-12) X(k-6) X(k)];
+    Ytr(k-200,:) = X(k-85);
 end
 for k = 5001:5500
-    Xte(k-5000,:) = [X(k-18) X(k-12) X(k-6)];
-    Yte(k-5000,:) = X(k);
+    Xte(k-5000,:) = [X(k-18) X(k-12) X(k-6) X(k)];
+    Yte(k-5000,:) = X(k-85);
 end
 clear X k
 %%
@@ -36,6 +36,7 @@ Yte = data(idx(197:end),8);
 
 %% construct neuro-fuzzy network
 clc
+% rng("default")
 net = MSOFNNplus(Xtr,Ytr,3,...
     "ActivationFunction", "sig",...
     "DensityThreshold", exp(-5),...
@@ -51,18 +52,22 @@ net = MSOFNNplus(Xtr,Ytr,3,...
     "adampar_epsilon", 1e-8,...
     "adampar_m0", 0,...
     "adampar_v0", 0,...
-    "plot", 0,...
-    "verbose", 1)
+    "Plot", 1,...
+    "Verbose", 1)
 
 % Train
 tic
-trained_net = net.train("validationPercent",0.2);
+trained_net = net.train("validationPercent",0.2)
 toc
 
 %% Test
 Yte = normalize(Yte,1,"range");
-[yhat,err] = trained_net.test(Xte,Yte);
+[yhat_last,err] = trained_net.last.test(Xte,Yte);
+disp(err)
+[yhat_best,err] = trained_net.last.test(Xte,Yte);
 disp(err)
 plot(Yte)
 hold on
-plot(yhat')
+plot(yhat_last')
+plot(yhat_best')
+legend("Yte","yhat-last","yhat-best")

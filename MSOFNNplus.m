@@ -12,6 +12,7 @@ classdef MSOFNNplus
         LearningRate
         MiniBatchSize
         MaxEpoch
+        TrainedEpoch
         Layer
         solverName
         ActivationFunction
@@ -19,14 +20,14 @@ classdef MSOFNNplus
         DataNormalize
         BatchNormType
         MSE_report
+        Verbose
+        Plot
     end
     properties (Access=private)
-        plot
+        
         Xtrain
         Ytrain
         dataSeenCounter
-        verbose
-        n_data   % Number of training data
         lambda_MB % {layer}(rule,MB)
         AF_AX % AF(A*xbar) : {layer}(Wl,1)
         DlamDx % {layer}(Ml,1)
@@ -97,16 +98,14 @@ classdef MSOFNNplus
             o.LearningRate = opts.LearningRate; 
             o.MaxEpoch = opts.MaxEpoch;
             o.DensityThreshold = opts.DensityThreshold;
-            o.verbose = opts.verbose;
-            o.plot = opts.plot;
+            o.Verbose = opts.verbose;
+            o.Plot = opts.plot;
             o.ActivationFunction = opts.ActivationFunction;
             o.WeightInitializationType = opts.WeightInitializationType;
             o.BatchNormType = opts.BatchNormType;
             o.DataNormalize = opts.DataNormalize;
             o.solverName = opts.SolverName;
-            o.MiniBatchSize = opts.MiniBatchSize;
-            o.n_data = size(Xtr, 1);
-            
+            o.MiniBatchSize = opts.MiniBatchSize;            
 
             if strcmp(o.solverName,"Adam")
                 % Adam Parameters
@@ -150,12 +149,13 @@ classdef MSOFNNplus
                 Yval = o.Ytrain(idx(1:n_val),:);
                 o.Xtrain = o.Xtrain(idx(n_val+1:end),:);
                 o.Ytrain = o.Ytrain(idx(n_val+1:end),:);
+                MSE_val = zeros(1,o.MaxEpoch);
                 MSE_val_best = inf;
             end
             [Xtr,Ytr,maxY,minY] = o.dataNormalize(o.Xtrain,o.Ytrain);
-            
+            if o.Plot, figure; end
             iteration = 0;
-            MSE_ep = zeros(1,o.MaxEpoch);
+            MSE = zeros(1,o.MaxEpoch);
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
                 o.dataSeenCounter = 0;
@@ -179,29 +179,48 @@ classdef MSOFNNplus
                     % save pars
                     yhat(:,MB_idx) = yhat_MB;
                     o.dataSeenCounter = o.dataSeenCounter + numel(MB_idx);
-
-                    %%% iteration - results
-                    % MSE_it(iteration) = mse(yhat_MB,y);
-                    % plot(1:iteration,MSE_it)
-                    % drawnow
-                    % mse(yhat_MB,y)
                 end
 
-                %%% epoch - results
+                %%%%%%%%%%% epoch - results %%%%%%%%%%%
                 yhat = o.outputUnNormalize(yhat,maxY,minY);
-                MSE_ep(epoch) = mse(o.Ytrain,yhat');
-                disp([epoch, MSE_ep(epoch)])
+                MSE(epoch) = mse(o.Ytrain,yhat');
 
+                % verbose
+                if o.Verbose
+                    fprintf("Epoch: %d, MSE: %.4f \n",epoch,MSE(epoch))
+                end
+                
+                % validation
                 if opts.validationPercent
                     [~,errVal] = o.test(Xval,Yval);
-                    if (epoch>1) && (errVal.MSE < MSE_val_best)
+                    MSE_val(epoch) = errVal.MSE;
+                    if (epoch>1) && (MSE_val(epoch) < MSE_val_best)
                         netBest = o;
-                        MSE_val_best = errVal.MSE;
+                        MSE_val_best = MSE_val(epoch);
+                    end
+                end 
+                
+                % plot
+                if o.Plot
+                    if opts.validationPercent
+                        yyaxis left
+                        plot(1:epoch,MSE(1:epoch))
+                        yyaxis right
+                        plot(1:epoch,MSE_val(1:epoch))
+                        legend("Train","Validation")
+                        drawnow
+                    else
+                        plot(1:epoch,MSE(1:epoch))
+                        legend("Train")
+                        drawnow
                     end
                 end
-                if (epoch>5) && prod(MSE_ep(epoch-5:end) - MSE_ep(epoch)), break, end
-            end
+                o.TrainedEpoch = epoch;
+                % Eliminate Condition
+                if (epoch>5) && prod(MSE(epoch-5:end) - MSE(epoch)), break, end
+            end %%%%%%%%%%% END EPOCH %%%%%%%%%%%
 
+            % save network
             if opts.validationPercent
                 trained_net.last = o;
                 trained_net.best = netBest;
@@ -209,14 +228,15 @@ classdef MSOFNNplus
                 trained_net = o;
             end
 
-            [bestMSE,bestIdx] = min(MSE_ep);
-            meanMSE = mean(MSE_ep);
+            % return results
+            [bestMSE,bestIdx] = min(MSE);
+            meanMSE = mean(MSE);
             o.MSE_report.Mean = meanMSE;
             o.MSE_report.Best = bestMSE;
-            o.MSE_report.Last = MSE_ep(end);
+            o.MSE_report.Last = MSE(end);
 
             MSE = ["Last";"Best";"Mean"];
-            Value = [MSE_ep(end); bestMSE; meanMSE];
+            Value = [MSE(end); bestMSE; meanMSE];
             Epoch = [epoch; bestIdx; nan];
             table(MSE,Value,Epoch)
             % o.MSE_report = sprintf("[Mean:%.3f, Best:%.3f]",mean(MSE_ep),min(MSE_ep));
@@ -584,7 +604,7 @@ classdef MSOFNNplus
         % ---------------------- CONSTRUCT VARIABLES ----------------------
         % for more speed
         function o = construct_vars(o)
-            max_rule = o.n_data;             % Maximum rule of each layer
+            max_rule = size(o.Xtrain,1);             % Maximum rule of each layer
             max_layer = o.n_Layer;              % Maximum number of layer
 
             % Initialize Variables
@@ -596,11 +616,11 @@ classdef MSOFNNplus
                 o.Layer{l}.gMu = (zeros(o.Layer{l}.M, 1)); %inf
                 o.Layer{l}.gX = zeros;%(o.Layer{l}.M, 1); %inf
                 o.Layer{l}.N = 0;
-                o.Layer{l}.taw = (zeros(max_rule/2, 1)); % /2 ?
+                o.Layer{l}.taw = (zeros(round(max_rule/2), 1)); % /2 ?
                 o.Layer{l}.CS = 0;
-                o.Layer{l}.Cc = (zeros(o.Layer{l}.M, max_rule/2)); % /2 ? %inf
-                o.Layer{l}.CX = zeros(1, max_rule/2); % /2 ? %inf
-                o.Layer{l}.P = (zeros(o.Layer{l}.M, max_rule/2)); % /2 ? %inf
+                o.Layer{l}.Cc = (zeros(o.Layer{l}.M, round(max_rule/2))); % /2 ? %inf
+                o.Layer{l}.CX = zeros(1, round(max_rule/2)); % /2 ? %inf
+                o.Layer{l}.P = (zeros(o.Layer{l}.M, round(max_rule/2))); % /2 ? %inf
                 o.Layer{l}.A = ([]);
                 o.Layer{l}.X = (zeros(o.Layer{l}.M + 1, o.MiniBatchSize)); %inf
             end
