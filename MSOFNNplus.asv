@@ -196,7 +196,8 @@ classdef MSOFNNplus
                     y = Ytr(MB_idx,:)';
 
                     % Forward >> Backward
-                    [o,yhat_MB] = o.Main(x,y,iteration);
+                    [o,yhat_MB] = o.Main(x,y,iteration); % error per it
+                    % o = o.Main(x,y,iteration); % error per ep
 
                     % save pars
                     yhat(MB_idx,:) = yhat_MB'; % error per it
@@ -204,9 +205,14 @@ classdef MSOFNNplus
                 end %%%%%%%%%%% END iteration %%%%%%%%%%%
 
                 %%%%%%%%%%% epoch - results %%%%%%%%%%%
-                yhat = o.UnNormalizeOutput(yhat,maxY,minY);
-                LOSS_tr(epoch) = o.LossFunc(yhat,o.Ytrain);
-                MSE_tr(epoch) = mse(o.Ytrain,yhat);
+                yhat = o.UnNormalizeOutput(yhat,maxY,minY); % error per it
+                LOSS_tr2(epoch) = o.LossFunc(yhat,o.Ytrain); % error per it
+                MSE_tr2(epoch) = mse(o.Ytrain,yhat); % error per it
+
+                % test data train (due use last updates of this epoch)
+                [~,errTr] = o.Test(o.Xtrain,o.Ytrain);
+                MSE_tr(epoch) = errTr.MSE;
+                LOSS_tr(epoch) = errTr.Loss;
 
                 % if classification
                 if endsWith(lower(o.ProblemType),'classification')

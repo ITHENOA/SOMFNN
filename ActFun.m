@@ -79,5 +79,12 @@ classdef ActFun
             yp(yp >= 0) = 1;
             yp(yp < 0) = y + alpha;
         end
+
+        function [y,yp] = Softmax(x)
+            e = exp(x);
+            s = sum(e); 
+            y = e ./ s;
+            yp = 1 ./ (s-e);
+        end
     end
 end
