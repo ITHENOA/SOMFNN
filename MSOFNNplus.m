@@ -251,7 +251,10 @@ classdef MSOFNNplus
             end
             for l = 1:numel(lambdas)
                 lambdas{l} = mean(lambdas{l},2);
+                lambdas{l}
+                lambdas{l}(lambdas{l}<mean(lambdas{l})*std(lambdas{l}))
             end
+            
 
             % save network
             if opts.validationPercent
@@ -503,8 +506,8 @@ classdef MSOFNNplus
                 % eq(17) => (W,M+1,N,MB)
                 DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
                 % mean => (W,M+1,N)
-                % DeDA = mean(DeDA,4); % mean of error of mini batch
-                DeDA = sum(DeDA,4); % sum of error of mini batch
+                DeDA = mean(DeDA,4); % mean of error of mini batch
+                % DeDA = sum(DeDA,4); % sum of error of mini batch
                 % reshape => (W*N,M+1)
                 DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
 
