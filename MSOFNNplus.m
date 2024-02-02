@@ -255,6 +255,7 @@ classdef MSOFNNplus
                 lambdas{l}(lambdas{l}<mean(lambdas{l})*std(lambdas{l}))
             end
             
+% HA --> Novelty on rule removing
 
             % save network
             if opts.validationPercent
