@@ -244,6 +244,15 @@ classdef MSOFNNplus
 
             end %%%%%%%%%%% END EPOCH %%%%%%%%%%%
 
+            if opts.validationPercent
+                [~,~,lambdas] = o.Test(Xval);
+            else
+                [~,~,lambdas] = o.Test(o.Xtrain);
+            end
+            for l = 1:numel(lambdas)
+                lambdas{l} = mean(lambdas{l},2);
+            end
+
             % save network
             if opts.validationPercent
                 trained_net.last = o;
@@ -267,13 +276,16 @@ classdef MSOFNNplus
         end
 
         %% ----------------------------- TEST -----------------------------
-        function [yhat, err] = Test(net,Xtest,Ytest,opts)
+        function [yhat, err, lambda] = Test(net,Xtest,Ytest,opts)
             arguments
                 net
                 Xtest
                 Ytest = []
                 opts.Plot {logical} = 0
             end
+            err = [];
+            lambda = cell(1,net.n_Layer);
+
             Yexist = 1;
             if isempty(Ytest), Yexist = 0; end
             net = net.StringValidate();
@@ -289,8 +301,8 @@ classdef MSOFNNplus
             x = Xtest;
             % Forward
             for l = 1:net.n_Layer
-                lambda =  net.GetLambda(x, net.Layer{l}, 1:net.n_rulePerLayer(l));
-                x = net.GetOutput(net.Layer{l}, x, lambda);
+                lambda{l} =  net.GetLambda(x, net.Layer{l}, 1:net.n_rulePerLayer(l));
+                x = net.GetOutput(net.Layer{l}, x, lambda{l});
             end
             % un normalize if needed
             yhat = net.UnNormalizeOutput(x');
