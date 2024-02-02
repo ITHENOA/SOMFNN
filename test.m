@@ -47,11 +47,11 @@ Yte = data(idx(197:end),8);
 
 %% construct neuro-fuzzy network
 clc,close all
-rng(1)
-net = MSOFNNplus(Xtr,Ytr,2,...
+% rng(1)
+net = MSOFNNplus(Xtr,Ytr,4,...
     "ActivationFunction", ["sig"],...
     "DensityThreshold", exp(-5),...
-    "MaxEpoch", 50,...
+    "MaxEpoch", 30,...
     "BatchNormType", "none",...
     "LearningRate", 1,...
     "SolverName", "minibatch",...
@@ -69,19 +69,41 @@ net = MSOFNNplus(Xtr,Ytr,2,...
 % Train
 tic
 trained_net = net.Train(...
-    "validationPercent",0,...
+    "validationPercent",0.2,...
     "valPerEpochFrequency",5)
 toc
 
+idx = randperm(size(Xtr,1));
+n_val = round(size(Xtr,1) * 0.2);
+Xval = Xtr(idx(1:n_val),:);
+Yval = Ytr(idx(1:n_val));
+
+net = RuleRemover(trained_net.best,Xval,Yval,0.5,2);
+
+% net_rem1 = RuleRemover(trained_net.best,Xval,'mean*std')
+% net_rem2 = RuleRemover(trained_net.best,Xval,'percent','percentage',0.5)
+% net_rem3 = RuleRemover(trained_net.best,Xval,'mean-std','k',2)
+
 % Test
-[yhat_last,err] = trained_net.Test(Xte,Yte,"Plot",0);
+[yhat_best,err] = Test(trained_net.best,Xte,Yte,"Plot",0);
+disp(err)
+[yhat_1,err] = Test(net.Percentage,Xte,Yte,"Plot",0);
+disp(err)
+[yhat_2,err] = Test(net_rem2,Xte,Yte,"Plot",0);
+disp(err)
+[yhat_3,err] = Test(net_rem3,Xte,Yte,"Plot",0);
+disp(err)
 % [yhat_last,err] = trained_net.last.Test(Xte,Yte,"Plot",0);
 % disp(err)
 % [yhat_best,err] = trained_net.best.Test(Xte,Yte);
 % disp(err)
 % figure
-% plot(Yte)
-% hold on
-% plot(yhat_last')
-% plot(yhat_best')
-legend("Yte","yhat-last","yhat-best")
+figure
+plot(Yte)
+hold on
+plot(yhat_best',DisplayName='best')
+plot(yhat_1',DisplayName='ma')
+plot(yhat_2',DisplayName='per')
+plot(yhat_3',DisplayName='alaki')
+legend('show')
+% legend("Yte","yhat-last","yhat-best")

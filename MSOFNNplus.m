@@ -156,6 +156,10 @@ classdef MSOFNNplus
                 o
                 opts.validationPercent = 0
                 opts.valPerEpochFrequency = 1 % test val every 1 epochs
+                opts.ApplyRuleRemover {logical} = 0
+            end
+            if ~opts.validationPercent && opts.ApplyRuleRemover
+                warning("Validation data not exist, Rule-Remover will work with training data, which it may havent good performance.")
             end
             o = o.StringValidate();
             if o.Plot, figure; end
@@ -182,6 +186,8 @@ classdef MSOFNNplus
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
 
+                % (o.Layer{:}).CS = deal(0);
+                
                 o.dataSeenCounter = 0;
                 yhat = zeros(size(Ytr));
                 shuffle_idx = randperm(size(Xtr,1));
@@ -242,15 +248,17 @@ classdef MSOFNNplus
                 % Eliminate Condition
                 if (epoch>5) && prod(METRIC_tr(epoch-5:end) - METRIC_tr(epoch)), break, end
 
+                for l = 1:numel(o.Layer)
+                    o.Layer{l}.CS = zeros(size(o.Layer{l}.CS));
+                end
             end %%%%%%%%%%% END EPOCH %%%%%%%%%%%
 
+            % Apply Rule Remover (if needed)
             if opts.validationPercent
-                [~,~,lambdas] = o.Test(Xval);
+                o = o.RuleRemover(Xval, 0.4, 0.5);
+                netBest = netBest.RuleRemover(Xval, 0.4, 0.5);
             else
-                [~,~,lambdas] = o.Test(o.Xtrain);
-            end
-            for l = 1:numel(lambdas)
-                lambdas{l} = mean(lambdas{l},2);
+                o = o.RuleRemover(o.Xtrain, 0.4, 0.5);
             end
 
             % save network
@@ -341,8 +349,86 @@ classdef MSOFNNplus
             % backward >> update A matrix of each rule
             o = o.Backward(yhat,y,it);
         end
+
+        %% ------------------------ Rule Remover ---------------------------
+        function [bestNet,allNets] = RuleRemover(net,X,Y,percent,k)
+            [~,~,lambdas] = net.Test(X);
+            % bestLoss = inf;
+            % Methods = ["Percentage","MeanMultiStd","MeanMinesStd"];
+            % for i = 1:numel(Methods)
+            %     type = Methods(i);
+            %     obj = net;
+            %     for l = 1:numel(lambdas)
+            %         lambdas{l} = mean(lambdas{l},2);
+            % 
+            %         if type == "Percentage"
+            %             removedRules = (lambdas{l} <= prctile(lambdas{l},percent*100));
+            %         elseif type == "MeanMultiStd"
+            %             removedRules = (lambdas{l} < mean(lambdas{l}) * std(lambdas{l}));
+            %         elseif type == "MeanMinesStd"
+            %             removedRules = (lambdas{l} < mean(lambdas{l}) - k * std(lambdas{l}));
+            %         end
+            % 
+            %         obj.Layer{l}.N = obj.Layer{l}.N - sum(removedRules);
+            %         obj.Layer{l}.CS(removedRules) = [];
+            %         obj.Layer{l}.Cc(:,removedRules) = [];
+            %         obj.Layer{l}.CX(removedRules) = [];
+            %         obj.Layer{l}.P(:,removedRules) = [];
+            %         obj.Layer{l}.A(repelem(removedRules,obj.Layer{l}.W),:) = [];
+            %         obj.n_rulePerLayer(l) = obj.Layer{l}.N;
+            %     end
+            %     allNets.(type) = obj;
+            %     [~,err,~] = net.Test(X);
+            %     if err.Loss < bestLoss
+            %         bestNet = obj;
+            %         bestLoss = err.Loss;
+            %     end
+            % end
+
+            % Options for fminunc
+            options = optimoptions(@fminunc, 'Display', 'iter', 'MaxIterations', 50, 'Algorithm', 'quasi-newton');
+            params = rand;
+            % Optimize parameters using fminunc
+            bestParams = fminunc(@(params) setType(net,X,Y,lambdas,"MeanMinesStd",[],params), params, options);
+    
+
+            % objectiveFunction = @(par) setType(net,X,Y,lambdas,"Percentage",par,[]);
+            % options = optimoptions('ga', 'Display', 'iter','MaxGenerations', 20);
+            % lb = 0; % Lower bounds for parameters [percentage, k]
+            % ub = 1; % Upper bounds for parameters [percentage, k]
+            % bestpar = ga(objectiveFunction, 1, [], [], [], [], lb, ub, [], options);
+
+            function [loss,net] = setType(net,X,Y,lambdas,type,percent,k) 
+                obj = net;
+                for l = 1:numel(lambdas)
+                    lambdas{l} = mean(lambdas{l},2);
+    
+                    if type == "Percentage"
+                        removedRules = (lambdas{l} <= prctile(lambdas{l},percent*100));
+                    elseif type == "MeanMultiStd"
+                        removedRules = (lambdas{l} < mean(lambdas{l}) * std(lambdas{l}));
+                    elseif type == "MeanMinesStd"
+                        removedRules = (lambdas{l} < mean(lambdas{l}) - k * std(lambdas{l}));
+                    end
+                    
+                    obj.Layer{l}.N = obj.Layer{l}.N - sum(removedRules);
+                    obj.Layer{l}.CS(removedRules) = [];
+                    obj.Layer{l}.Cc(:,removedRules) = [];
+                    obj.Layer{l}.CX(removedRules) = [];
+                    obj.Layer{l}.P(:,removedRules) = [];
+                    obj.Layer{l}.A(repelem(removedRules,obj.Layer{l}.W),:) = [];
+                    obj.n_rulePerLayer(l) = obj.Layer{l}.N;
+                end
+                [~,err,~] = net.Test(X,Y);
+                loss = err.Loss;
+            end
+            % function loss = computeLoss(net,X,percent,k)
+            % 
+            % end
+        end
     end
 
+    %% PRIVATE FUNCTIONS
     methods (Access=private)
         %%  ------------------------ FORWARD PATH  ------------------------
         function [y,o] = Forward(o,x)
