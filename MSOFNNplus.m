@@ -14,7 +14,7 @@ classdef MSOFNNplus
         MaxEpoch
         TrainedEpoch
         Layer
-        solverName
+        SolverName
         ActivationFunction
         WeightInitializationType
         DataNormalize
@@ -34,6 +34,8 @@ classdef MSOFNNplus
         AFp_AX % derivative of AF : {layer}()
         adapar % parameters of Adam algorithm
         uniqOutputs
+        classification = 0
+        regression = 0
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -59,25 +61,28 @@ classdef MSOFNNplus
                 opts.adampar_m0 = 0
                 opts.adampar_v0 = 0
             end
-            opts.DataNormalize = validatestring(opts.DataNormalize,["none","X","XY"]);
-            opts.BatchNormType = validatestring(opts.BatchNormType,["none","zscore"]);
-            opts.SolverName = validatestring(opts.SolverName,["SGD","Adam","MiniBatchGD"]);
-            opts.WeightInitializationType = validatestring(opts.WeightInitializationType,["none","xavier"]);
-            for i = 1:numel(opts.ActivationFunction)
-                opts.ActivationFunction(i) = validatestring(opts.ActivationFunction(i),["Sigmoid","ReLU","LeakyRelu","Tanh","ELU","Linear","Softmax"]);
-            end
 
-            if numel(opts.ActivationFunction) == 1
-                opts.ActivationFunction = repmat(opts.ActivationFunction,1,n_Layer);
-            elseif numel(opts.ActivationFunction) == 2
-                opts.ActivationFunction = [repmat(opts.ActivationFunction(1),1,n_Layer-1), opts.ActivationFunction(2)];
-            elseif numel(opts.ActivationFunction) ~= n_Layer
-                error("Incorrect number of AFs")
-            end
+            % Save to object
+            o.LearningRate = opts.LearningRate;
+            o.MaxEpoch = opts.MaxEpoch;
+            o.DensityThreshold = opts.DensityThreshold;
+            o.MiniBatchSize = opts.MiniBatchSize;
+            o.Verbose = opts.verbose;
+            o.Plot = opts.plot;
+            o.n_Layer = n_Layer;
+            o.ActivationFunction = opts.ActivationFunction;
+            o.WeightInitializationType = opts.WeightInitializationType;
+            o.BatchNormType = opts.BatchNormType;
+            o.DataNormalize = opts.DataNormalize;
+            o.SolverName = opts.SolverName;
 
-            % Check if it's a regression or classification problem
-            o.uniqOutputs = unique(Ytr);      
+            % Validate String Variables
+            o = o.StringValidate();
+
+            % Problem Type
+            o.uniqOutputs = unique(Ytr);
             if all(isinteger(Ytr)) % Classification
+                o.classification = 1;
                 if all(ismember(o.uniqOutputs, [0, 1]))
                     disp('Problem Type: Binary Classification');
                     o.ProblemType = "Binary-Classification";
@@ -86,6 +91,7 @@ classdef MSOFNNplus
                     o.ProblemType = "Multiclass-Classification";
                 end
             else % Regression
+                o.regression = 1;
                 if size(Ytr,2) == 1
                     disp('Problem Type: MISO Regression');
                     o.ProblemType = "MISO-Regression";
@@ -110,23 +116,10 @@ classdef MSOFNNplus
                     'Fix this: (W(%d)=%d >= %d) \nHint: W(l) >= output dimension'], ...
                     num2str(l), l(1), W(l(1)), W(end));
             end
-
-            % Parameters
-            o.n_Layer = n_Layer;
             o.n_nodes = [M,W(end)];
-            o.LearningRate = opts.LearningRate;
-            o.MaxEpoch = opts.MaxEpoch;
-            o.DensityThreshold = opts.DensityThreshold;
-            o.Verbose = opts.verbose;
-            o.Plot = opts.plot;
-            o.ActivationFunction = opts.ActivationFunction;
-            o.WeightInitializationType = opts.WeightInitializationType;
-            o.BatchNormType = opts.BatchNormType;
-            o.DataNormalize = opts.DataNormalize;
-            o.solverName = opts.SolverName;
-            o.MiniBatchSize = opts.MiniBatchSize;
 
-            if strcmp(o.solverName,"Adam")
+            % Adam Parameters
+            if strcmp(o.SolverName,"Adam")
                 % Adam Parameters
                 o.adapar.ini_m = opts.adampar_m0;
                 o.adapar.ini_v = opts.adampar_v0;
@@ -140,7 +133,7 @@ classdef MSOFNNplus
                 [o.adapar.m{:}] = deal(o.adapar.ini_m);
                 [o.adapar.v{:}] = deal(o.adapar.ini_v);
 
-            elseif strcmp(o.solverName,"SGD") && o.MiniBatchSize > 1
+            elseif strcmp(o.SolverName,"SGD") && o.MiniBatchSize > 1
                 warning("In SGD Algorithm batch_size should be 1; I fixed this for you")
                 o.MiniBatchSize = 1;
             end
@@ -158,7 +151,9 @@ classdef MSOFNNplus
             arguments
                 o
                 opts.validationPercent = 0
+                opts.valPerEpochFrequency = 1 % test val every 1 epochs
             end
+            o = o.StringValidate();
             if o.Plot, figure; end
             if opts.validationPercent % Validation
                 idx = randperm(size(o.Xtrain,1));
@@ -167,27 +162,30 @@ classdef MSOFNNplus
                 Yval = o.Ytrain(idx(1:n_val),:);
                 o.Xtrain = o.Xtrain(idx(n_val+1:end),:);
                 o.Ytrain = o.Ytrain(idx(n_val+1:end),:);
-                MSE_val = zeros(1,o.MaxEpoch);
-                LOSS_val = zeros(1,o.MaxEpoch);
-                mseValLoss = inf;
+                bestValLoss = inf;
+                valEpochs = [1,opts.valPerEpochFrequency:opts.valPerEpochFrequency:o.MaxEpoch];
+                METRIC_val = zeros(1,numel(valEpochs));
+                LOSS_val = zeros(1,numel(valEpochs));
+                valCount = 0;
             end
             % normalize data if needed
             [Xtr,Ytr,maxY,minY] = o.NormalizeData(o.Xtrain,o.Ytrain);
-            
-            iteration = 0;
-            MSE_tr = zeros(1,o.MaxEpoch);
+
+            it = 0; % iteration total
+            METRIC_tr = zeros(1,o.MaxEpoch);
             LOSS_tr = zeros(1,o.MaxEpoch);
+            
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
 
                 o.dataSeenCounter = 0;
                 yhat = zeros(size(Ytr));
                 shuffle_idx = randperm(size(Xtr,1));
-                
+
                 %%%%%%%%%%% iteration %%%%%%%%%%%
-                for it = 1 : ceil(size(Xtr,1)/o.MiniBatchSize)
-                    iteration = iteration + 1;
-                    MB_idx = shuffle_idx( (it-1)*o.MiniBatchSize+1 : min(it*o.MiniBatchSize,size(Xtr,1)) );
+                for it_epoch = 1 : ceil(size(Xtr,1)/o.MiniBatchSize)
+                    it = it + 1;
+                    MB_idx = shuffle_idx( (it_epoch-1)*o.MiniBatchSize+1 : min(it_epoch*o.MiniBatchSize,size(Xtr,1)) );
 
                     x = Xtr(MB_idx,:)';
                     if ~strcmp(o.BatchNormType,"none")
@@ -196,7 +194,7 @@ classdef MSOFNNplus
                     y = Ytr(MB_idx,:)';
 
                     % Forward >> Backward
-                    [o,yhat_MB] = o.Main(x,y,iteration);
+                    [o,yhat_MB] = o.Main(x,y,it);
 
                     % save pars
                     yhat(MB_idx,:) = yhat_MB'; % error per it
@@ -205,123 +203,40 @@ classdef MSOFNNplus
 
                 %%%%%%%%%%% epoch - results %%%%%%%%%%%
                 yhat = o.UnNormalizeOutput(yhat,maxY,minY);
-                LOSS_tr(epoch) = o.LossFunc(yhat,o.Ytrain);
-                MSE_tr(epoch) = mse(o.Ytrain,yhat);
-
+                LOSS_tr(epoch) = o.GetLoss(yhat,o.Ytrain);
                 % if classification
                 if endsWith(lower(o.ProblemType),'classification')
-                    yhat = o.ChooseClass(yhat);
-                    Metric = o.MetricFunc(yhat,o.Ytrain);
-                    Acc(epoch) = Metric.Acc;
+                    yhat = o.GetClassLabel(yhat);
                 end
-                
+                METRIC_tr(epoch) = o.GetMetric(yhat,o.Ytrain); % MSE/ACC for regression/classification
+
                 % verbose
                 if o.Verbose
-                    fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] [Loss:%.4f] \n", epoch, MSE_tr(epoch), sqrt(MSE_tr(epoch)), LOSS_tr(epoch))
+                    fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), sqrt(METRIC_tr(epoch)), LOSS_tr(epoch))
+                elseif ~rem(epoch,10)
+                    fprintf("[Epoch:%d]\n", epoch)
                 end
 
                 % validation
-                if opts.validationPercent
+                if opts.validationPercent && ismember(epoch,valEpochs)
+                    valCount = valCount + 1;
                     [~,errVal] = o.Test(Xval,Yval);
-                    MSE_val(epoch) = errVal.MSE;
-                    LOSS_val(epoch) = errVal.Loss;
-                    if (epoch>1) && (LOSS_val(epoch) < mseValLoss)
+                    METRIC_val(valCount) = errVal.MSE;
+                    LOSS_val(valCount) = errVal.Loss;
+                    if (valCount>1) && (LOSS_val(valCount) < bestValLoss)
                         netBest = o;
-                        mseValLoss = LOSS_val(epoch);
+                        bestValLoss = LOSS_val(valCount);
                     end
                 end
 
-                % plot
+                % Plot
                 if (o.Plot) && (epoch > 1)
-                    if (opts.validationPercent)
-                        if endsWith(lower(o.ProblemType),'regression')
-                            subplot(2,2,[1 2])
-                            plot(1:epoch, sqrt(MSE_tr(1:epoch)), 'DisplayName', 'Training RMSE','LineWidth',1.5);
-                            hold on;
-                            plot(1:epoch, sqrt(MSE_val(1:epoch)), 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-                            xlabel('Epoch');
-                            ylabel('RMSE');
-                            title('Training Process');
-                            legend('show');
-                            grid on
-                            drawnow;
-                            hold off;
-
-                            subplot(2,2,[3 4])
-                            plot(1:epoch, LOSS_tr(1:epoch), 'DisplayName', 'Training Loss','LineWidth',1.5);
-                            hold on;
-                            plot(1:epoch, LOSS_val(1:epoch), 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-                            xlabel('Epoch');
-                            ylabel('Loss');
-                            legend('show');
-                            grid on
-                            drawnow;
-                            hold off;
-                        else
-                            subplot(2,2,[1 2])
-                            plot(1:epoch, Acc(1:epoch), 'DisplayName', 'Training Acc','LineWidth',1.5);
-                            hold on;
-                            plot(1:epoch, Acc(1:epoch), 'DisplayName', 'Validation Acc','LineStyle','--','Color','k');
-                            xlabel('Epoch');
-                            ylabel('Acuracy');
-                            title('Training Process');
-                            legend('show');
-                            grid on
-                            drawnow;
-                            hold off;
-
-                            subplot(2,2,[3 4])
-                            plot(1:epoch, LOSS_tr(1:epoch), 'DisplayName', 'Training Loss','LineWidth',1.5);
-                            hold on;
-                            plot(1:epoch, LOSS_val(1:epoch), 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-                            xlabel('Epoch');
-                            ylabel('Loss');
-                            legend('show');
-                            grid on
-                            drawnow;
-                            hold off;
-                        end
-                    else
-                        if endsWith(lower(o.ProblemType),'regression')
-                            subplot(2,2,[1 2])
-                            plot(1:epoch, sqrt(MSE_tr(1:epoch)), 'DisplayName', 'Training RMSE','LineWidth',1.5);
-                            xlabel('Epoch');
-                            ylabel('RMSE');
-                            title('Training Process');
-                            legend('show');
-                            grid on
-                            drawnow
-
-                            subplot(2,2,[3 4])
-                            plot(1:epoch, LOSS_tr(1:epoch), 'DisplayName', 'Training Loss','LineWidth',1.5);
-                            xlabel('Epoch');
-                            ylabel('Loss');
-                            legend('show');
-                            grid on
-                            drawnow
-                        else
-                            subplot(2,2,[1 2])
-                            plot(1:epoch, Acc(1:epoch), 'DisplayName', 'Training Acc','LineWidth',1.5);
-                            xlabel('Epoch');
-                            ylabel('Acuracy');
-                            title('Training Process');
-                            legend('show');
-                            grid on
-                            drawnow
-
-                            subplot(2,2,[3 4])
-                            plot(1:epoch, LOSS_tr(1:epoch), 'DisplayName', 'Training Loss','LineWidth',1.5);
-                            xlabel('Epoch');
-                            ylabel('Loss');
-                            legend('show');
-                            grid on
-                            drawnow
-                        end 
-                    end
+                    o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), METRIC_val(1:valCount), LOSS_val(1:valCount), valEpochs(1:valCount))
                 end
+
                 o.TrainedEpoch = epoch;
                 % Eliminate Condition
-                if (epoch>5) && prod(MSE_tr(epoch-5:end) - MSE_tr(epoch)), break, end
+                if (epoch>5) && prod(METRIC_tr(epoch-5:end) - METRIC_tr(epoch)), break, end
 
             end %%%%%%%%%%% END EPOCH %%%%%%%%%%%
 
@@ -334,29 +249,33 @@ classdef MSOFNNplus
             end
 
             % return results
-            [bestMSE,bestIdx] = min(MSE_tr);
-            meanMSE = mean(MSE_tr);
+            [bestMSE,bestIdx] = min(METRIC_tr);
+            meanMSE = mean(METRIC_tr);
             o.MSE_report.Mean = meanMSE;
             o.MSE_report.Best = bestMSE;
-            o.MSE_report.Last = MSE_tr(end);
+            o.MSE_report.Last = METRIC_tr(end);
 
-            MSE_tr = ["Last";"Best";"Mean"];
-            Value = [MSE_tr(end); bestMSE; meanMSE];
+            METRIC_tr = ["Last";"Best";"Mean"];
+            Value = [METRIC_tr(end); bestMSE; meanMSE];
             Epoch = [epoch; bestIdx; nan];
-            table(MSE_tr,Value,Epoch)
+            table(METRIC_tr,Value,Epoch)
             % o.MSE_report = sprintf("[Mean:%.3f, Best:%.3f]",mean(MSE_ep),min(MSE_ep));
         end
 
         %% ----------------------------- TEST -----------------------------
-        function [yhat, err] = Test(net,Xtest,Ytest)
+        function [yhat, err] = Test(net,Xtest,Ytest,opts)
             arguments
                 net
                 Xtest
                 Ytest = []
+                opts.Plot {logical} = 0
             end
+            Yexist = 1;
+            if isempty(Ytest), Yexist = 0; end
+            net = net.StringValidate();
 
             % normalize data if needed
-            [Xtest,Ytest,maxY,minY] = net.NormalizeData(Xtest,Ytest);
+            [Xtest,~,maxY,minY] = net.NormalizeData(Xtest,Ytest);
             Xtest = Xtest';
 
             % if ~strcmp(net.BatchNormType, "none")
@@ -371,20 +290,31 @@ classdef MSOFNNplus
             end
             % un normalize if needed
             yhat = net.UnNormalizeOutput(x',maxY,minY);
-            % determine loss (required Ytest)
-            Loss = net.LossFunc(yhat,Ytest);
+
+            % determin loss (required Ytest)
+            if Yexist, Loss = net.GetLoss(yhat,Ytest); end
+
             % prepare output for classification problem
-            if endsWith(lower(net.ProblemType),'classification')
-                yhat = net.ChooseClass(yhat);
-            end
-            % if error need (required Ytest)
-            if exist("Ytest","var")
-                err.MSE = mse(yhat,Ytest);
-                err.RMSE = sqrt(err.MSE);
-                STD = std(Ytest);
-                err.NDEI = err.RMSE / STD;
-                err.NDEI2 = err.RMSE / (sqrt(net.dataSeenCounter)*(STD));
+            if net.classification,  yhat = net.GetClassLabel(yhat); end
+
+            if Yexist
+                % determin Metric (required Ytest)
+                [metric1,metric2] = deal([]);
+                [metric1,metric2] = net.GetMetric(yhat,Ytest);
                 err.Loss = Loss;
+                if net.regression
+                    err.MSE = metric1;
+                    err.RMSE = sqrt(metric1);
+                    STD = std(Ytest);
+                    err.NDEI = err.RMSE / STD;
+                    err.NDEI2 = err.RMSE / (sqrt(net.dataSeenCounter)*(STD));
+                    if opts.Plot
+                        figure
+                        plot(Ytest), hold on, plot(yhat)
+                    end
+                elseif net.classification
+                    err.ACC = metric1;
+                end
             end
         end
 
@@ -520,8 +450,7 @@ classdef MSOFNNplus
 
             %%%%%%%%%%%%%%%%%%%%%%%%%%%
             if max(l.A,[],"all") > 1e1*20
-                max(l.A,[],"all")
-                warning("A big")
+                warning("A big " + max(l.A,[],"all"))
             end
             if sum(isnan(y),"all") || sum(isinf(y),"all")
                 warning("y inf nan")
@@ -564,7 +493,7 @@ classdef MSOFNNplus
                 DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
 
                 %%% Adam Algorithm
-                if strcmp(o.solverName,"Adam")
+                if strcmp(o.SolverName,"Adam")
                     if ~isscalar(o.adapar.m{l})
                         extraMtx = ones(size(DeDA,1)-size(o.adapar.m{l},1),size(DeDA,2));
                         o.adapar.m{l} = [o.adapar.m{l}; extraMtx * o.adapar.ini_m];
@@ -599,7 +528,7 @@ classdef MSOFNNplus
 
         %% OTHER FUNCTIONS
 
-        % ---------------------------- get_taw ----------------------------
+        %% ---------------------------- get_taw ----------------------------
         % used in @get_dens
         function taw = GetTaw(o,l,n)
             %   INPUT
@@ -615,7 +544,7 @@ classdef MSOFNNplus
             taw(taw == 0) = eps;
         end
 
-        % -------------------- SQUARED EUCLIDEAN NORM --------------------
+        %% -------------------- SQUARED EUCLIDEAN NORM --------------------
         % used in @get_taw, @update_rule, @init_rule, add_or_update_rule
         function out = SquEucNorm(~,x)
             % IF : x(m,1) => out(1,1) : [SEN(x(m,1))]
@@ -644,7 +573,7 @@ classdef MSOFNNplus
             % % toc
         end
 
-        % ------------------------ FIRING STRENGTH ------------------------
+        %% ------------------------ FIRING STRENGTH ------------------------
         % used in @get_layerOutput, @test
         function lam = GetLambda(o,x,l,n)
             %   INPUT
@@ -658,7 +587,7 @@ classdef MSOFNNplus
             lam = D ./ sum(D);          % lam(#rule,#data)
         end
 
-        % -------------------- LOCAL DENSITY FUNCTION --------------------
+        %% -------------------- LOCAL DENSITY FUNCTION --------------------
         % used in @add_or_update_rule, @get_lam
         function D = GetDensity(o,x,l,n)
             %   INPUT
@@ -673,39 +602,57 @@ classdef MSOFNNplus
             D = exp(- o.SquEucNorm(x - l.P(1:l.M,n)) ./ o.GetTaw(l,n));
 
             %%%%%%%%%%%%%%%%%
-            % % Calculate the covariance matrix
+            % % % Calculate the covariance matrix
             % Sigma = cov(x);
-            % % Extract the variances, which are the diagonal elements of the covariance matrix
+            % % % Extract the variances, which are the diagonal elements of the covariance matrix
             % variances = diag(Sigma);
-            % % Create a diagonal matrix with these variances
-            % Sigma_diagonal = reshape(variances,1,1,[]);
-            % x = reshape(x,size(x,1),1,size(x,2));
-            % % less distance has more density
-            % D = exp(- o.SquEucNorm(x - l.P(1:l.M,n)) ./ o.GetTaw(l,n));
-            % D = exp(-pagetranspose(x - l.P(1:l.M,n)) .* Sigma_diagonal * (x - l.P(1:l.M,n)) );
+            % D = zeros(l.N,size(x,2));
+            % for k = 1:size(x,2)
+            %     for n = 1:l.N
+            %         D(n,k) = (x(:,k) - l.P(:,n))' .* variances(k) * (x(:,k) - l.P(:,n));
+            %     end
+            % end
         end
 
-        % ------------------------ normalize ----------------------------
+        %% ------------------------ String Validate ----------------------------
+        function o = StringValidate(o)
+            o.DataNormalize = validatestring(o.DataNormalize,["none","X","Y","XY"]);
+            o.BatchNormType = validatestring(o.BatchNormType,["none","zscore"]);
+            o.SolverName = validatestring(o.SolverName,["SGD","Adam","MiniBatchGD"]);
+            o.WeightInitializationType = validatestring(o.WeightInitializationType,["none","xavier"]);
+            for i = 1:numel(o.ActivationFunction)
+                o.ActivationFunction(i) = validatestring(o.ActivationFunction(i),["Sigmoid","ReLU","LeakyRelu","Tanh","ELU","Linear","Softmax"]);
+            end
+            if numel(o.ActivationFunction) == 1
+                o.ActivationFunction = repmat(o.ActivationFunction,1,o.n_Layer);
+            elseif numel(o.ActivationFunction) == 2
+                o.ActivationFunction = [repmat(o.ActivationFunction(1),1,o.n_Layer-1), o.ActivationFunction(2)];
+            elseif numel(o.ActivationFunction) ~= o.n_Layer
+                error("Incorrect number of AFs")
+            end
+        end
+
+        %% ------------------------ normalize ----------------------------
         function [X,Y,maxY,minY] = NormalizeData(o,X,Y)
-            if ~strcmp(o.DataNormalize,"none")
+            [maxY,minY] = deal([]);
+            if contains(o.DataNormalize,'X')
                 X = normalize(X,1,"range");
             end
-            [maxY,minY] = deal([]);
-            if strcmp(o.DataNormalize,"XY")
+            if contains(o.DataNormalize,'Y')
                 maxY = max(Y);
                 minY = min(Y);
                 Y = (Y - minY) / (maxY-minY);
             end
         end
-        % ------------------------ UNnormalize ----------------------------
+        %% ------------------------ UNnormalize ----------------------------
         function Y = UnNormalizeOutput(o,Y,maxY,minY)
-            if strcmp(o.DataNormalize,"XY")
+            if contains(o.DataNormalize,'Y')
                 Y = Y * (maxY-minY) + minY;
             end
         end
 
-        % ----------------------- Loss Function ---------------------------
-        function loss = LossFunc(o,yh,y)
+        %% ----------------------- Loss Function ---------------------------
+        function loss = GetLoss(o,yh,y)
             epsilon = 1e-15;  % Small constant to avoid numerical instability
             switch lower(o.ProblemType)
                 case 'miso-regression'
@@ -716,20 +663,27 @@ classdef MSOFNNplus
                     yh = max(epsilon, min(1 - epsilon, yh));  % Clip to avoid log(0)
                     loss = -mean(y .* log(yh) + (1 - y) .* log(1 - yh));
                 case 'multiclass-classification'
-                     yh = max(epsilon, yh);  % Clip to avoid log(0)
+                    yh = max(epsilon, yh);  % Clip to avoid log(0)
                     loss = -mean(sum(y .* log(yh), 2));
                 otherwise
                     error("Invalid 'ProblemType'.")
             end
         end
-        % ---------------------- Metrics Function -------------------------
-        function metric = MetricFunc(~,yh,y)
-            cm = confusionmat(yh,y);
-            metric.Acc = sum(diag(cm)) / sum(cm(:));
+        %% ---------------------- Metrics Function -------------------------
+        function [metric1,metric2] = GetMetric(o,yh,y)
+            metric2 = [];
+            if contains(lower(o.ProblemType),'regression')
+                metric1 = mse(yh,y); % MSE
+            elseif contains(lower(o.ProblemType),'classification')
+                cm = confusionmat(yh,y);
+                metric1 = sum(diag(cm)) / sum(cm(:)); % ACCURACY
+            else
+                error("Invalid 'ProblemType'.")
+            end
         end
 
-        % ------------------------ Choose Class ---------------------------
-        function yh = ChooseClass(o,yh)
+        %% ------------------------ Choose Class ---------------------------
+        function yh = GetClassLabel(o,yh)
             if strcmpi(o.ProblemType,'binary-classification')
                 yh(yh > 0.5) = 1;
                 yh(yh <= 0.5) = 0;
@@ -743,7 +697,7 @@ classdef MSOFNNplus
             end
         end
 
-        % ---------------------- CONSTRUCT VARIABLES ----------------------
+        %% ---------------------- CONSTRUCT VARIABLES ----------------------
         % for more speed
         function o = ConstructVars(o)
             max_rule = size(o.Xtrain,1);             % Maximum rule of each layer
@@ -769,5 +723,52 @@ classdef MSOFNNplus
             o.n_rulePerLayer = zeros(1, o.n_Layer);
             o.lambda_MB = cell(1,o.n_Layer);
         end
+
+        %% ------------------------------ PLOT -----------------------------
+        function GetPlot(o,opts,uptr,downtr,upval,downval,xval)
+            if endsWith(lower(o.ProblemType),'regression') % regression
+                subplot(2,2,[1 2])
+                plot(1:numel(uptr), uptr, 'DisplayName', 'Training RMSE','LineWidth',1.5);
+                ylabel('RMSE'); title('Training Process'); legend('show'); grid on
+                if (opts.validationPercent)
+                    hold on;
+                    % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
+                    line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation RMSE');
+                    hold off;
+                end
+
+                subplot(2,2,[3 4])
+                plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
+                xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
+                if (opts.validationPercent)
+                    hold on
+                    % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
+                    line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
+                    hold off
+                end
+                drawnow;
+            else % classification
+                subplot(2,2,[1 2])
+                plot(1:numel(uptr), uptr, 'DisplayName', 'Training Acc','LineWidth',1.5);
+                xlabel('Epoch'); ylabel('Acuracy'); title('Training Process'); legend('show','Location','best'); grid on
+                if (opts.validationPercent)
+                    hold on;
+                    plot(1:numel(uptr), upval, 'DisplayName', 'Validation Acc','LineStyle','--','Color','k');
+                    hold off;
+                end
+
+                subplot(2,2,[3 4])
+                plot(1:numel(upval), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
+                xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
+                if (opts.validationPercent)
+                    hold on;
+                    plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
+                    hold off;
+                end
+                drawnow;
+            end
+
+        end
+
     end
 end
