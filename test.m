@@ -48,7 +48,7 @@ Yte = data(idx(197:end),8);
 %% construct neuro-fuzzy network
 clc,close all
 % rng(1)
-net = MSOFNNplus(Xtr,Ytr,4,...
+net = MSOFNNplus(Xtr,Ytr,3,...
     "ActivationFunction", ["sig"],...
     "DensityThreshold", exp(-5),...
     "MaxEpoch", 30,...
@@ -56,7 +56,7 @@ net = MSOFNNplus(Xtr,Ytr,4,...
     "LearningRate", 1,...
     "SolverName", "minibatch",...
     "WeightInitializationType", "none",...
-    "DataNormalize" , "XY",...
+    "DataNormalize" , "X",...
     "MiniBatchSize", 64,...
     "adampar_beta1", 0.6,...
     "adampar_beta2", 0.8,...
@@ -70,40 +70,68 @@ net = MSOFNNplus(Xtr,Ytr,4,...
 tic
 trained_net = net.Train(...
     "validationPercent",0.2,...
-    "valPerEpochFrequency",5)
+    "valPerEpochFrequency",5,...
+    "ApplyRuleRemover",0)
 toc
+
+[~,err] = Test(trained_net.last, Xte, Yte, "Plot",1);disp(err)
+[~,err] = Test(trained_net.best, Xte, Yte, "Plot",1);disp(err)
 
 idx = randperm(size(Xtr,1));
 n_val = round(size(Xtr,1) * 0.2);
 Xval = Xtr(idx(1:n_val),:);
 Yval = Ytr(idx(1:n_val));
+%%
+net_removedRule = RuleRemover(trained_net.best,Xval,0.5,0.5,0.5,...
+    "OptimizeParams",0,...
+    "OutputData_required",Yval,...
+    "DisplayIterations","iter",...
+    "PSO_MaxIterations",20,...
+    "PSO_MaxStallIterations",7)
 
-net = RuleRemover(trained_net.best,Xval,Yval,0.5,2);
-
-% net_rem1 = RuleRemover(trained_net.best,Xval,'mean*std')
-% net_rem2 = RuleRemover(trained_net.best,Xval,'percent','percentage',0.5)
-% net_rem3 = RuleRemover(trained_net.best,Xval,'mean-std','k',2)
 
 % Test
-[yhat_best,err] = Test(trained_net.best,Xte,Yte,"Plot",0);
-disp(err)
-[yhat_1,err] = Test(net.Percentage,Xte,Yte,"Plot",0);
-disp(err)
-[yhat_2,err] = Test(net_rem2,Xte,Yte,"Plot",0);
-disp(err)
-[yhat_3,err] = Test(net_rem3,Xte,Yte,"Plot",0);
-disp(err)
-% [yhat_last,err] = trained_net.last.Test(Xte,Yte,"Plot",0);
-% disp(err)
-% [yhat_best,err] = trained_net.best.Test(Xte,Yte);
-% disp(err)
-% figure
 figure
-plot(Yte)
+plot(Yte,DisplayName='Ref')
 hold on
-plot(yhat_best',DisplayName='best')
-plot(yhat_1',DisplayName='ma')
-plot(yhat_2',DisplayName='per')
-plot(yhat_3',DisplayName='alaki')
+networks = [trained_net.last, ...
+        trained_net.best, ...
+        net_removedRule.Percentage, ...
+        net_removedRule.MeanMultiStd, ...
+        net_removedRule.MeanMinesStd, ...
+        net_removedRule.new];
+name = ["last","best","perc","mean*std","mean-std","new"];
+markers = ["*","o","+","square",">","x","."];
+for i = 1:numel(networks)
+    [yhat,err] = Test(networks(i), Xte, Yte, "Plot",0);
+    disp(err)
+    disp(networks(i).n_rulePerLayer)
+    plot(yhat,DisplayName=name(i),Marker=markers(i),MarkerIndices=1:10:numel(Yte),LineWidth=1.5)
+end
 legend('show')
-% legend("Yte","yhat-last","yhat-best")
+
+% [yhat_best,err] = Test(trained_net.best, Xte, Yte, "Plot",0);
+% disp(err)
+% disp(trained_net.last.n_rulePerLayer)
+% [yhat_1,err] = Test(net_removedRule.Percentage, Xte, Yte, "Plot",0);
+% disp(err)
+% disp(trained_net.last.n_rulePerLayer)
+% [yhat_2,err] = Test(net_removedRule.MeanMultiStd, Xte, Yte, "Plot",0);
+% disp(err)
+% disp(trained_net.last.n_rulePerLayer)
+% [yhat_3,err] = Test(net_removedRule.MeanMinesStd, Xte, Yte, "Plot",0);
+% disp(err)
+% disp(trained_net.last.n_rulePerLayer)
+% % [yhat_last,err] = trained_net.last.Test(Xte,Yte,"Plot",0);
+% % disp(err)
+% % [yhat_best,err] = trained_net.best.Test(Xte,Yte);
+% % disp(err)
+% % figure
+% 
+% plot(yhat_last',DisplayName='last')
+% plot(yhat_best',DisplayName='best')
+% plot(yhat_1',DisplayName='ma')
+% plot(yhat_2',DisplayName='per')
+% plot(yhat_3',DisplayName='alaki')
+% legend('show')
+% % legend("Yte","yhat-last","yhat-best")

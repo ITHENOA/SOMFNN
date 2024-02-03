@@ -151,23 +151,43 @@ classdef MSOFNNplus
         end
 
         %% ------------------------- TRAIN -------------------------
-        function trained_net = Train(o,opts)
+        function [trained_net,valData] = Train(o,opts)
             arguments
                 o
-                opts.validationPercent = 0
+                % or
+                opts.Xval
+                opts.Yval
+                % or
+                opts.validationSplitPercent = 0
+                % optional
                 opts.valPerEpochFrequency = 1 % test val every 1 epochs
                 opts.ApplyRuleRemover {logical} = 0
             end
-            if ~opts.validationPercent && opts.ApplyRuleRemover
+            % Error check
+            if ~opts.validationSplitPercent && opts.ApplyRuleRemover
                 warning("Validation data not exist, Rule-Remover will work with training data, which it may havent good performance.")
+            end
+            if opts.validationSplitPercent && (exist(opts.Xval,"var") || exist(opts.Yval,"var"))
+                if (exist(opts.Xval,"var") && exist(opts.Yval,"var"))
+                    warning("Validation data entered, so set 'valPerEpochFrequency' to zero.");
+                else
+                    error("Enter both of Xval and Yval")
+                end
             end
             o = o.StringValidate();
             if o.Plot, figure; end
-            if opts.validationPercent % Validation
-                idx = randperm(size(o.Xtrain,1));
-                n_val = round(size(o.Xtrain,1) * opts.validationPercent);
-                Xval = o.Xtrain(idx(1:n_val),:);
-                Yval = o.Ytrain(idx(1:n_val),:);
+            valData = [];
+            if opts.validationSplitPercent || exist(opts.Xval,"var") % Validation
+                if exist(opts.Xval,"var")
+                    Xval = opts.Xval;
+                    Yval = opts.Yval;
+                    n_val = size(Xval,1);
+                else
+                    idx = randperm(size(o.Xtrain,1));
+                    n_val = round(size(o.Xtrain,1) * opts.validationSplitPercent);
+                    Xval = o.Xtrain(idx(1:n_val),:);
+                    Yval = o.Ytrain(idx(1:n_val),:);
+                end
                 o.Xtrain = o.Xtrain(idx(n_val+1:end),:);
                 o.Ytrain = o.Ytrain(idx(n_val+1:end),:);
                 bestValLoss = inf;
@@ -228,7 +248,7 @@ classdef MSOFNNplus
                 end
 
                 % validation
-                if opts.validationPercent && ismember(epoch,valEpochs)
+                if opts.validationSplitPercent && ismember(epoch,valEpochs)
                     valCount = valCount + 1;
                     [~,errVal] = o.Test(Xval,Yval);
                     METRIC_val(valCount) = errVal.MSE;
@@ -253,16 +273,16 @@ classdef MSOFNNplus
                 end
             end %%%%%%%%%%% END EPOCH %%%%%%%%%%%
 
-            % Apply Rule Remover (if needed)
-            if opts.validationPercent
-                o = o.RuleRemover(Xval, 0.4, 0.5);
-                netBest = netBest.RuleRemover(Xval, 0.4, 0.5);
+            Apply Rule Remover (if needed)
+            if opts.validationSplitPercent
+                o = o.RuleRemover(Xval,0.5,0.5);
+                netBest = netBest.RuleRemover(Xval,0.5,0.5);
             else
-                o = o.RuleRemover(o.Xtrain, 0.4, 0.5);
+                o = o.RuleRemover(o.Xtrain,0.5,0.5);
             end
 
             % save network
-            if opts.validationPercent
+            if opts.validationSplitPercent
                 trained_net.last = o;
                 trained_net.best = netBest;
             else
@@ -281,6 +301,8 @@ classdef MSOFNNplus
             Epoch = [epoch; bestIdx; nan];
             table(METRIC_tr,Value,Epoch)
             % o.MSE_report = sprintf("[Mean:%.3f, Best:%.3f]",mean(MSE_ep),min(MSE_ep));
+            valData.x = Xval;
+            valData.y = Yval;
         end
 
         %% ----------------------------- TEST -----------------------------
@@ -351,80 +373,87 @@ classdef MSOFNNplus
         end
 
         %% ------------------------ Rule Remover ---------------------------
-        function [bestNet,allNets] = RuleRemover(net,X,Y,percent,k)
-            [~,~,lambdas] = net.Test(X);
-            % bestLoss = inf;
-            % Methods = ["Percentage","MeanMultiStd","MeanMinesStd"];
-            % for i = 1:numel(Methods)
-            %     type = Methods(i);
-            %     obj = net;
-            %     for l = 1:numel(lambdas)
-            %         lambdas{l} = mean(lambdas{l},2);
-            % 
-            %         if type == "Percentage"
-            %             removedRules = (lambdas{l} <= prctile(lambdas{l},percent*100));
-            %         elseif type == "MeanMultiStd"
-            %             removedRules = (lambdas{l} < mean(lambdas{l}) * std(lambdas{l}));
-            %         elseif type == "MeanMinesStd"
-            %             removedRules = (lambdas{l} < mean(lambdas{l}) - k * std(lambdas{l}));
-            %         end
-            % 
-            %         obj.Layer{l}.N = obj.Layer{l}.N - sum(removedRules);
-            %         obj.Layer{l}.CS(removedRules) = [];
-            %         obj.Layer{l}.Cc(:,removedRules) = [];
-            %         obj.Layer{l}.CX(removedRules) = [];
-            %         obj.Layer{l}.P(:,removedRules) = [];
-            %         obj.Layer{l}.A(repelem(removedRules,obj.Layer{l}.W),:) = [];
-            %         obj.n_rulePerLayer(l) = obj.Layer{l}.N;
-            %     end
-            %     allNets.(type) = obj;
-            %     [~,err,~] = net.Test(X);
-            %     if err.Loss < bestLoss
-            %         bestNet = obj;
-            %         bestLoss = err.Loss;
-            %     end
-            % end
+        function outNets = RuleRemover(net,InputData,percent,k,newpercent,opts)
+            arguments
+                net
+                InputData
+                percent
+                k
+                newpercent
+                opts.OptimizeParams = 0
+                opts.OutputData_required
+                opts.DisplayIterations = "iter" % {"iter","none","off","final"}
+                opts.PSO_MaxIterations = 50
+                opts.PSO_MaxStallIterations = 10
+            end
+            
+            if opts.OptimizeParams
+                if isempty(opts.OutputData_required)
+                    error("Need output data for optimize parameters")
+                end
+            else
+                opts.OutputData_required = [];
+            end
+            [~,~,lambdas] = net.Test(InputData);
 
-            % Options for fminunc
-            options = optimoptions(@fminunc, 'Display', 'iter', 'MaxIterations', 50, 'Algorithm', 'quasi-newton');
-            params = rand;
-            % Optimize parameters using fminunc
-            bestParams = fminunc(@(params) setType(net,X,Y,lambdas,"MeanMinesStd",[],params), params, options);
-    
+            %%%%%%%%%%% Methods Setting %%%%%%%%%%%
+            Methods = ["Percentage","MeanMultiStd","MeanMinesStd","new"];
+            MethodsPar = [percent, nan, k, newpercent];
+            mustOptimize = [1 0 1 1];
+            lb = [0 nan 0 0];
+            ub = [1 nan 5 1];
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-            % objectiveFunction = @(par) setType(net,X,Y,lambdas,"Percentage",par,[]);
-            % options = optimoptions('ga', 'Display', 'iter','MaxGenerations', 20);
-            % lb = 0; % Lower bounds for parameters [percentage, k]
-            % ub = 1; % Upper bounds for parameters [percentage, k]
-            % bestpar = ga(objectiveFunction, 1, [], [], [], [], lb, ub, [], options);
-
-            function [loss,net] = setType(net,X,Y,lambdas,type,percent,k) 
-                obj = net;
+            % loop on methods
+            for i = 1:numel(Methods)
+                parameter = MethodsPar(i);
+                if opts.OptimizeParams && mustOptimize(i)
+                    PSO_options = optimoptions("particleswarm",...
+                        "Display", opts.DisplayIterations,...
+                        "MaxIterations", opts.PSO_MaxIterations,...
+                        "MaxStallIterations", opts.PSO_MaxStallIterations);
+                    objFunc = @(parameter) RuleRemoverCore(net,InputData,lambdas,Methods(i),parameter,opts.OutputData_required);
+                    parameter = particleswarm(objFunc, 1, lb(i), ub(i), PSO_options);
+                    fprintf("Optimized parameter of method(%s) = %f \n",Methods(i),parameter)
+                end
+                [~,outNets.(Methods(i))] = RuleRemoverCore(net,InputData,lambdas,Methods(i),parameter,opts.OutputData_required);
+            end
+           
+            % Nested Function
+            function [loss,net] = RuleRemoverCore(net,X,lambdas,type,parameter,Y)
+                loss = [];
                 for l = 1:numel(lambdas)
                     lambdas{l} = mean(lambdas{l},2);
     
                     if type == "Percentage"
-                        removedRules = (lambdas{l} <= prctile(lambdas{l},percent*100));
+                        removedRules = (lambdas{l} <= prctile(lambdas{l},parameter*100));
                     elseif type == "MeanMultiStd"
                         removedRules = (lambdas{l} < mean(lambdas{l}) * std(lambdas{l}));
                     elseif type == "MeanMinesStd"
-                        removedRules = (lambdas{l} < mean(lambdas{l}) - k * std(lambdas{l}));
+                        removedRules = (lambdas{l} < mean(lambdas{l}) - parameter * std(lambdas{l}));
+                    elseif type == "new"
+                        removedRules = (lambdas{l} < (mean(lambdas{l})+prctile(lambdas{l},parameter*100))/(2+std(lambdas{l})));
+                    else
+                        error("invalid method name")
                     end
-                    
-                    obj.Layer{l}.N = obj.Layer{l}.N - sum(removedRules);
-                    obj.Layer{l}.CS(removedRules) = [];
-                    obj.Layer{l}.Cc(:,removedRules) = [];
-                    obj.Layer{l}.CX(removedRules) = [];
-                    obj.Layer{l}.P(:,removedRules) = [];
-                    obj.Layer{l}.A(repelem(removedRules,obj.Layer{l}.W),:) = [];
-                    obj.n_rulePerLayer(l) = obj.Layer{l}.N;
+
+                    if prod(removedRules)
+                        [~,maxidx] = max(lambdas{l});
+                        removedRules(maxidx) = 0;
+                    end
+                    net.Layer{l}.N = net.Layer{l}.N - sum(removedRules);
+                    net.Layer{l}.CS(removedRules) = [];
+                    net.Layer{l}.Cc(:,removedRules) = [];
+                    net.Layer{l}.CX(removedRules) = [];
+                    net.Layer{l}.P(:,removedRules) = [];
+                    net.Layer{l}.A(repelem(removedRules,net.Layer{l}.W),:) = [];
+                    net.n_rulePerLayer(l) = net.Layer{l}.N;
                 end
-                [~,err,~] = net.Test(X,Y);
-                loss = err.Loss;
+                if ~isempty(Y)
+                    [~,err,~] = net.Test(X,Y);
+                    loss = err.Loss;
+                end
             end
-            % function loss = computeLoss(net,X,percent,k)
-            % 
-            % end
         end
     end
 
@@ -755,7 +784,11 @@ classdef MSOFNNplus
             epsilon = 1e-15;  % Small constant to avoid numerical instability
             switch lower(o.ProblemType)
                 case 'miso-regression'
+                    try
                     loss = sum((yh - y).^2,1) / 2;
+                    catch
+                        0
+                    end
                 case 'mimo-regression'
                     loss = sum((yh - y).^2,"all") / size(y,2);
                 case 'binary-classification'
@@ -829,7 +862,7 @@ classdef MSOFNNplus
                 subplot(2,2,[1 2])
                 plot(1:numel(uptr), uptr, 'DisplayName', 'Training RMSE','LineWidth',1.5);
                 ylabel('RMSE'); title('Training Process'); legend('show'); grid on
-                if (opts.validationPercent)
+                if (opts.validationSplitPercent)
                     hold on;
                     % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
                     line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation RMSE');
@@ -839,7 +872,7 @@ classdef MSOFNNplus
                 subplot(2,2,[3 4])
                 plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
                 xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
-                if (opts.validationPercent)
+                if (opts.validationSplitPercent)
                     hold on
                     % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
                     line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
@@ -850,7 +883,7 @@ classdef MSOFNNplus
                 subplot(2,2,[1 2])
                 plot(1:numel(uptr), uptr, 'DisplayName', 'Training Acc','LineWidth',1.5);
                 xlabel('Epoch'); ylabel('Acuracy'); title('Training Process'); legend('show','Location','best'); grid on
-                if (opts.validationPercent)
+                if (opts.validationSplitPercent)
                     hold on;
                     plot(1:numel(uptr), upval, 'DisplayName', 'Validation Acc','LineStyle','--','Color','k');
                     hold off;
@@ -859,7 +892,7 @@ classdef MSOFNNplus
                 subplot(2,2,[3 4])
                 plot(1:numel(upval), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
                 xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
-                if (opts.validationPercent)
+                if (opts.validationSplitPercent)
                     hold on;
                     plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
                     hold off;
