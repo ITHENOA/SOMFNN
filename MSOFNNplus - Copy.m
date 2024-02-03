@@ -379,9 +379,9 @@ classdef MSOFNNplus
         %%  ----------------------------- main -----------------------------
         function [o,yhat] = Main(o,x,y,it)
             % forward >> Create Rules and estimaye final output
-            [yhat,o,BP_pars] = o.Forward(x);
+            [yhat,o] = o.Forward(x);
             % backward >> update A matrix of each rule
-            o = o.Backward(yhat,y,BP_pars,it);
+            o = o.Backward(yhat,y,it);
         end
 
         %% ------------------------ Rule Remover ---------------------------
@@ -471,41 +471,52 @@ classdef MSOFNNplus
     %% PRIVATE FUNCTIONS
     methods (Access=private)
         %%  ------------------------ FORWARD PATH  ------------------------
-        function [y,o,BP_pars] = Forward(o,x)
+        function [y,o] = Forward(o,x)
             % x : mini batch data : size(#features,batch_size)
 
             % Layer
-            BP_pars.lambda_4D = cell(1,o.n_Layer);
-            BP_pars.AfAx_4D = cell(1,o.n_Layer);
-            BP_pars.AfpAx_4D = cell(1,o.n_Layer);
+            o.lambda_MB = cell(1,o.n_Layer);
+            o.AF_AX = cell(1,o.n_Layer);
+            o.AFp_AX = cell(1,o.n_Layer);
             for l = 1:numel(o.Layer)
                 % each data in mini_batch
                 MB = size(x,2);
                 for k = 1:MB
                     o.Layer{l} = o.RuleFunc(o.Layer{l}, x(:,k), o.dataSeenCounter+k);
-                    % o.Layer{l}.X(1:o.Layer{l}.M + 1, k) = [1;x(:,k)];
+                    o.Layer{l}.X(1:o.Layer{l}.M + 1, k) = [1;x(:,k)];
                 end
-                
+                o.n_rulePerLayer(l) = o.Layer{l}.N;
 
                 % calculate for backward process
-                
+                n = 1:o.Layer{l}.N;
                 N = o.Layer{l}.N;
-                o.n_rulePerLayer(l) = N;
-                n = 1:N;
                 M = o.Layer{l}.M;
                 W = o.Layer{l}.W;
-                
-
-                lambda_l = o.GetLambda(x,o.Layer{l},n); %(N,MB)
-                BP_pars.lambda_4D{l} = reshape(lambda_l, 1,1,N,MB); %(N,MB)=>(1,1,N,MB)
-                BP_pars.xbar_4D{l} = reshape([ones(1,MB);x], M+1,1,1,MB); %(M+1,MB)=>(M+1,1,1,MB)
-
+                o.lambda_MB{l} =  o.GetLambda(x,o.Layer{l},n); % (N,MB)
+                taw_nl = o.GetTaw(o.Layer{l},n); % (N,1)
+                pxt = 2 * ( reshape(o.Layer{l}.P(:,n),[],1,n(end)) - x ) ./ reshape(taw_nl,1,1,n(end)); % (M,MB,N)
+                lam_1MBn = reshape(o.lambda_MB{l}',1,[],n(end)); % (1,MB,N)
+                o.DlamDx{l} = lam_1MBn .* (pxt - sum(lam_1MBn.*pxt,3)); % (M,MB,N)
+                %%%%%%%%%%
+                % lambda_4D = reshape(o.lambda_MB{l}, 1,1,N,MB); %(N,MB)=>(1,1,N,MB)
+                % x_4D = reshape(x, M,1,1,MB); %(M,MB)=>(M,1,1,MB)
+                % P_4D = reshape(o.Layer{l}.P(:,n), M,1,N); %(M,N)=>(M,1,N,MB=NoNeed)
+                % taw2_4D = reshape(taw_nl, 1,1,N); %(N,1)=>(1,1,N,MB=NoNeed)
+                % pxt_4D = 2 * (P_4D - x_4D) / taw2_4D;
+                % lam_pxt_4D = lambda_4D * pxt_4D;
+                % DlamDx_4D = lambda_4D * (pxt_4D - sum(lam_pxt_4D,3)); %(M,1,N,MB),  sum(~,3):sum on N
+                %%%%%%%%%%
+% x
                 % determin input of next layer
-                [x, AfAx, AfpAx] = o.GetOutput(o.Layer{l}, x, lambda_l);
-
+                [x, AfAx, AfpAx] = o.GetOutput(o.Layer{l}, x, o.lambda_MB{l});
+% x
                 % calculate for backward process
-                BP_pars.AfAx_4D{l} = reshape(AfAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
-                BP_pars.AfpAx_4D{l} = reshape(AfpAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
+                o.AF_AX{l} = pagetranspose(reshape(AfAx', size(AfAx,2), o.Layer{l}.W, [])); % (W*N,MB) -> (W,MB,N)
+                o.AFp_AX{l} = pagetranspose(reshape(AfpAx', size(AfpAx,2), o.Layer{l}.W, [])); % (W*N,MB) -> (W,MB,N)
+                %%%%%%%
+                % AfAx_4D = reshape(AfAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
+                % AfpAx_4D = reshape(AfpAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
+                % %%%%%%%
 
             end
             y = x;    % last output of layers
@@ -578,9 +589,9 @@ classdef MSOFNNplus
             l.CX(n_star) = l.CX(n_star) + (SEN_xk - l.CX(n_star)) / l.CS(n_star);
 
             % (new) push other clusters
-            % n_other = setdiff(1:l.N,n_star);
-            % l.Cc(m,n_other) = l.Cc(m, n_other) - (xk + l.Cc(m, n_other)) ./ l.CS(n_other);
-            % l.CX(n_other) = l.CX(n_other) - (SEN_xk + l.CX(n_other)) ./ l.CS(n_other);
+            n_other = setdiff(1:l.N,n_star);
+            l.Cc(m,n_other) = l.Cc(m, n_other) - (xk + l.Cc(m, n_other)) ./ l.CS(n_other);
+            l.CX(n_other) = l.CX(n_other) - (SEN_xk + l.CX(n_other)) ./ l.CS(n_other);
 
             if sum(isnan(l.CX))
                 0
@@ -611,7 +622,7 @@ classdef MSOFNNplus
 
         %% ------------------------- BACKWARD PATH -------------------------
         % update A matrix of each layer
-        function o = Backward(o,y_hat,y_target,BP_pars,it)
+        function o = Backward(o,y_hat,y_target,it)
             DeDy = y_hat - y_target;  % (wl,MB)
             % ek = DeDy' * DeDy / 2;
 
@@ -622,27 +633,37 @@ classdef MSOFNNplus
             % MB on forth dimention
             for  l = o.n_Layer : -1 : 1
 
-                N = o.Layer{l}.N;
-                n = 1:N;
-                M = o.Layer{l}.M;
-                W = o.Layer{l}.W;
+                % (M,MB,N) -> (M,1,N,MB)
+                DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
+                % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
+                AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
+                % (N,MB) -> (1,1,N,MB)
+                lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
+                % (W,MB,N) -> (W,1,N,MB)
+                AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
+                % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
+                A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
 
-                xbar_4D = BP_pars.xbar_4D{l}; %(M+1,1,1,MB)
-                lambda_4D = BP_pars.lambda_4D{l}; %(1,1,N,MB)
-                AfpAx_4D = BP_pars.AfpAx_4D{l}; %(W,1,N,MB)
-                AfAx_4D = BP_pars.AfAx_4D{l}; %(W,1,N,MB)
+                % save param
+                d_AFp_4D = d{l} .* AFp_4D;
 
-                P_4D = reshape(o.Layer{l}.P(:,n), M,1,N); %(M,N)=>(M,1,N,MB=NoNeed)
-                taw2_4D = reshape(o.GetTaw(o.Layer{l},n), 1,1,N); %(N,1)=>(1,1,N,MB=NoNeed)
-                %(M,1,N,MB)=2*((M,1,N,1)-(M,1,1,MB))./(1,1,N,1)
-                pxt_4D = 2 * (P_4D - xbar_4D(2:end,:,:,:)) ./ taw2_4D;
-                %(M,1,N,MB)=(1,1,N,MB).*((M,1,N,MB)-sum((1,1,N,MB).*(M,1,N,MB),3)=(M,1,1,MB))
-                DlamDx_4D = lambda_4D .* (pxt_4D - sum(lambda_4D .* pxt_4D,3)); % sum(~,3):sum on N
-                %(W,M+1,N,MB)=(1,1,N,MB).*(((W,1,1,MB).*(W,1,N,MB))*(M+1,1,1,MB))
-                DeDA = lambda_4D .* pagemtimes((d{l} .* AfpAx_4D),xbar_4D);
-                %%%%% sum or mean %%%%%
-                DeDA = sum(DeDA,4); %(W,M+1,N,MB)=>(W,M+1,N,1) 
-                DeDA = reshape(permute(DeDA,[1 3 2]),W*N,M+1); %(W,M+1,N,1)=>(W*N,M+1,1,1)
+                % eq(17) => (W,M+1,N,MB)
+                DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
+                % mean => (W,M+1,N)
+                DeDA = mean(DeDA,4); % mean of error of mini batch
+                % DeDA = sum(DeDA,4); % sum of error of mini batch
+                % reshape => (W*N,M+1)
+                DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
+
+                %%%%%%%%%%
+                xbar_4D = reshape(X, M+1,1,1,MB); %(M+1,MB)=>(M+1,1,1,MB)
+                DeDA_4D = lambda_4D * (d{l} .* AfpAx_4D) * xbar_4D; %(W,M+1,N,MB)
+                % DeDA_4D = mean(DeDA_4D,4); %(W,M+1,N,MB=1)
+                DeDA_4D = sum(DeDA_4D,4); %(W,M+1,N,MB=1)
+                DeDA_4D = reshape(permute(DeDA_4D,[1 3 2]),W*N,M+1); %(W,M+1,N,1)=>(W*N,M+1,1,1)
+                Atild_T_4D = reshape(o.Layer{l}.A(:,2:end)',M,W,N); %(W*N,M)=>(W,M,N,MB=NoNeed)
+                d{l-1} = sum(DlamDx_4D * AfAx_4D' * d{l} + lambda_4D * Atild_T_4D * (d{l} .* AFpAx_4D) ,3); %(M,1,N,MB), sum(~,3):sum on N
+                %%%%%%%%%%
 
                 %%% Adam Algorithm
                 if strcmp(o.SolverName,"Adam")
@@ -653,47 +674,19 @@ classdef MSOFNNplus
                     end
                     o.adapar.m{l} = o.adapar.b1 * o.adapar.m{l} + (1-o.adapar.b1) * DeDA;
                     o.adapar.v{l} = o.adapar.b2 * o.adapar.v{l} + (1-o.adapar.b2) * DeDA.^2;
+
                     % or Algorithm 1
                     mhat = o.adapar.m{l} / (1-o.adapar.b1.^it);
                     vhat = o.adapar.v{l} / (1-o.adapar.b2.^it);
                     DeDA = mhat ./ (sqrt(vhat) + o.adapar.epsilon);
+
                     % or Algorithm 2
                     % o.LearningRate = sqrt(1-o.adapar.b2.^it) / (1-o.adapar.b1.^it);
                     % DeDA = o.adapar.m{l} ./ (sqrt(o.adapar.v{l}) + o.adapar.epsilon);
                 end
-
+% o.Layer{l}.A
                 % update A
                 o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
-
-                
-                
-                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                % % (M,MB,N) -> (M,1,N,MB)
-                % DlamDx_4D = reshape(permute(o.DlamDx{l},[1 3 2]),o.Layer{l}.M,1,o.Layer{l}.N,[]);
-                % % (W,MB,N) -> (W,1,N,MB) -> (1,W,N,MB)
-                % AF_T_4D = pagetranspose(reshape(permute(o.AF_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]));
-                % % (N,MB) -> (1,1,N,MB)
-                % lam_4D = reshape(o.lambda_MB{l},1,1,o.Layer{l}.N,[]);
-                % % (W,MB,N) -> (W,1,N,MB)
-                % AFp_4D = reshape(permute(o.AFp_AX{l},[1 3 2]),o.Layer{l}.W,1,o.Layer{l}.N,[]);
-                % % A : (W*N,M+1) -> (W*N,M) -> (W,M,N)
-                % A_tild_3D = reshape(o.Layer{l}.A(:,2:end)', o.Layer{l}.M, o.Layer{l}.W, []);
-                % 
-                % % save param
-                % d_AFp_4D = d{l} .* AFp_4D;
-                % 
-                % % eq(17) => (W,M+1,N,MB)
-                % DeDA = pagemtimes( lam_4D .* d_AFp_4D, pagetranspose(reshape(o.Layer{l}.X(:,1:size(y_hat,2)),o.Layer{l}.M+1,1,1,[])) );
-                % % mean => (W,M+1,N)
-                % DeDA = mean(DeDA,4); % mean of error of mini batch
-                % % DeDA = sum(DeDA,4); % sum of error of mini batch
-                % % reshape => (W*N,M+1)
-                % DeDA = reshape(pagetranspose(permute(DeDA,[3 1 2])),[],size(DeDA,2));
-                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-                
-% o.Layer{l}.A
-                
 % o.Layer{l}.A
                 if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
                     warning
@@ -701,10 +694,7 @@ classdef MSOFNNplus
 
                 if l == 1, break, end
                 % eq(18) => (W,1,N,MB) : find 'd' of previous layer
-                Atild_T_4D = reshape(o.Layer{l}.A(:,2:end)',M,W,N); %(W*N,M)=>(W,M,N,MB=NoNeed)
-                %(M,1,N,MB)=sum( (M,1,N,MB)*(1,W,N,MB)*(W,1,1,MB) + (1,1,N,MB).*(W,M,N,1) * ((W,1,1,MB).*(W,1,N,MB)) ,3)
-                d{l-1} = sum( PMT(DlamDx_4D,pagetranspose(AfAx_4D),d{l}) + PMT(lambda_4D.*Atild_T_4D,(d{l}.*AfpAx_4D)) ,3); % sum(~,3):sum on N
-                % d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
+                d{l-1} = sum( pagemtimes(pagemtimes(DlamDx_4D,AF_T_4D),d{l}) + pagemtimes(lam_4D .* A_tild_3D, d_AFp_4D), 3);
             end
 
         end

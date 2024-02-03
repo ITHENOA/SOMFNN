@@ -58,7 +58,7 @@ b        = 0.1;     % value for b in eq (1)
 tau      = 17;		% delay constant in eq (1)
 x0       = 1.2;		% initial condition: x(t=0)=x0
 deltat   = 0.1;	    % time step size (which coincides with the integration step)
-sample_n = 5500;	% total no. of samples, excluding the given initial condition
+sample_n = 6000;	% total no. of samples, excluding the given initial condition
 interval = 1;	    % output is printed at every 'interval' time steps
 
 
