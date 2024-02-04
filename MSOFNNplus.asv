@@ -985,7 +985,7 @@ classdef MSOFNNplus
                 subplot(2,2,[1 2])
                 plot(1:numel(uptr), uptr*100, 'DisplayName', 'Training Accuracy','LineWidth',1.5);
                 ylabel('Accuracy'); title('Training Process'); legend('show','Location','southeast'); grid on
-                ylim([min(uptr*100),105])
+                ylim([min(),100])
                 if (opts.validationSplitPercent)
                     hold on;
                     % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
@@ -996,7 +996,6 @@ classdef MSOFNNplus
                 subplot(2,2,[3 4])
                 plot(1:numel(uptr), downtr*100, 'DisplayName', 'Training Loss','LineWidth',1.5);
                 xlabel('Epoch'); ylabel('Loss'); legend('show','Location','northeast'); grid on
-                ylim([min(downtr*100),max(downtr*100)])
                 if (opts.validationSplitPercent)
                     hold on
                     % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');

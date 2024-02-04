@@ -1,7 +1,6 @@
 clear
 clc
 %% liver (Binery classification)
-clear;clc;close all
 data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\liver_disorders.xlsx"));
 Y = data(:,end);
 X = data(:,1:end-1);
@@ -14,7 +13,6 @@ Xte = X(idxTe,:);
 Yte = Y(idxTe);
 clear data X Y idx idxTr idxTe
 %% KMG (3 class)
-clear;clc;close all
 addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\KMG")
 load fieldAmp.mat
 load fieldAmp_t.mat
@@ -26,8 +24,7 @@ Ytr = fieldAmp(idx(1:10000),end);
 Xte = fieldAmp(idx(10001:end),1:end-1);
 Yte = fieldAmp(idx(10001:end),end);
 clear fieldAmp fieldAmp_t
-%% Mackey Glass (1 reg)
-clear;clc;close all
+%%
 load MackeyGlassNew.mat
 data(:,1) = [];
 for t = 201:3200
@@ -39,20 +36,18 @@ for t = 5001:5500
     Yte(t-5000,:) = data(t + 85);
 end
 clear data t
-%% Mackey Glass (easy)
-clear;clc;close all
-load mackey_0.1.mat
-for k = 201:3200
-    Xtr(k-200,:) = [X(k-24) X(k-18) X(k-12) X(k-6)];
-    Ytr(k-200,:) = X(k);
-end
-for k = 5001:5500
-    Xte(k-5000,:) = [X(k-24) X(k-18) X(k-12) X(k-6)];
-    Yte(k-5000,:) = X(k);
-end
-clear X k
-%% Auto MPG (1 reg)
-clear;clc;close all
+%%
+% load mackey_0.1.mat
+% for k = 201:3200
+%     Xtr(k-200,:) = [X(k-24) X(k-18) X(k-12) X(k-6)];
+%     Ytr(k-200,:) = X(k);
+% end
+% for k = 5001:5500
+%     Xte(k-5000,:) = [X(k-24) X(k-18) X(k-12) X(k-6)];
+%     Yte(k-5000,:) = X(k);
+% end
+% clear X k
+%%
 data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\auto_mpg_data (5).xlsx"));
 % data = table2array(readtable("C:\Users\hojja\Desktop\MSOFNN\dataset\auto_mpg_data (5).xlsx"));
 % data = table2array(readtable("C:\Users\Cib-Sabz\Documents\MATLAB\Fuzzy Logic - Fall 2023\Final Project\dataset\auto_mpg_data (5).xlsx"));
@@ -65,18 +60,17 @@ Ytr = data(idx(1:196),8);
 Yte = data(idx(197:end),8);
 clear data idx
 %% SP500
-clear;clc;close all
 data = table2array(readtable("C:\Users\hojja\Desktop\MSOFNN\dataset\SP500.csv"))
 %% construct neuro-fuzzy network
 clc,close all
 % rng(1)
 for i = 1:1
     i
-net = MSOFNNplus(Xtr,Ytr,2,...
+net = MSOFNNplus(Xtr,Ytr,3,...
     "n_hiddenNodes","Auto",...
-    "ActivationFunction", ["sigmoid"],...
+    "ActivationFunction", ["sigmoid","relu"],...
     "DensityThreshold", exp(-5),...
-    "MaxEpoch", 2000,...
+    "MaxEpoch", 100,...
     "BatchNormType", "none",...
     "LearningRate", 0.01,...
     "SolverName", "adam",...
@@ -88,19 +82,18 @@ net = MSOFNNplus(Xtr,Ytr,2,...
     "adampar_epsilon", 1e-8,...
     "adampar_m0", 0,...
     "adampar_v0", 0,...
-    "Plot", 1,...
+    "Plot", 0,...
     "Verbose", 5)
 
 % Train
 % tic
 trained_net = net.Train(...
-    "validationSplitPercent",0.2,...
+    "validationSplitPercent",0,...
     "valPerEpochFrequency",5,...
     "ApplyRuleRemover",0);
 % toc
 
 %
-
 [~,err] = Test(trained_net, Xte, Yte, "Plot",1);disp(err)
 % LOSS(i) = err.LOSS;
 % MSE(i) = err.MSE;
