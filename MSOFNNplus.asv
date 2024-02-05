@@ -1003,9 +1003,9 @@ classdef MSOFNNplus
                 end
 
                 subplot(2,2,[3 4])
-                plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
+                plot(1:numel(uptr), downtr*100, 'DisplayName', 'Training Loss','LineWidth',1.5);
                 xlabel('Epoch'); ylabel('Loss'); legend('show','Location','northeast'); grid on
-                ylim([min(downtr),max(downtr)])
+                ylim([min(downtr*100),max(downtr*100)])
                 if (opts.validationSplitPercent)
                     hold on
                     % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
