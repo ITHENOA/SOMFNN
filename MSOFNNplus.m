@@ -193,10 +193,6 @@ classdef MSOFNNplus
             o = o.StringValidate();
             if o.Plot, figure; end
             valData = [];
-            valEpochs = [];
-            METRIC_val = [];
-            LOSS_val = [];
-            valCount = 0;
             if opts.validationSplitPercent || exist("opts.Xval","var") % Validation
                 if exist("opts.Xval","var")
                     Xval = opts.Xval;
@@ -215,6 +211,7 @@ classdef MSOFNNplus
                 valEpochs = [1,opts.valPerEpochFrequency:opts.valPerEpochFrequency:o.MaxEpoch];
                 METRIC_val = zeros(1,numel(valEpochs));
                 LOSS_val = zeros(1,numel(valEpochs));
+                valCount = 0;
             end
             % normalize data if needed
             [Xtr,Ytr] = o.NormalizeData(o.Xtrain,o.Ytrain);
@@ -257,19 +254,17 @@ classdef MSOFNNplus
 
                 % un normalize data (if needed)
                 yhat = o.UnNormalizeOutput(yhat);
-                
+
+                % calculate loss
+                LOSS_tr(epoch) = o.GetLoss(yhat,o.Ytrain);
+
                 % class label detection (if needed)
                 if o.classification
                     yhat = o.GetClassLabel(yhat);
                 end
 
-                % calculate loss
-                LOSS_tr(epoch) = o.GetLoss(yhat,o.Ytrain);
-
-                % calculate metrices 
-                % (regression): metric => MSE
-                % (classification): metric => ACC, other => PREC,RECAL,F1SCORE
-                [METRIC_tr(epoch),otherMetrics] = o.GetMetric(yhat,o.Ytrain); % MSE/ACC for regression/classification
+                % calculate metrices
+                METRIC_tr(epoch) = o.GetMetric(yhat,o.Ytrain); % MSE/ACC for regression/classification
 
                 % verbose
                 if o.Verbose
@@ -277,7 +272,7 @@ classdef MSOFNNplus
                         if o.regression
                             fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), sqrt(METRIC_tr(epoch)), LOSS_tr(epoch))
                         else
-                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] [Prec:%.3f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch), otherMetrics.PREC)
+                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch))
                         end
                     end
                 end
@@ -285,13 +280,9 @@ classdef MSOFNNplus
                 % validation
                 if (opts.validationSplitPercent || exist("opts.Xval","var")) && ismember(epoch,valEpochs)
                     valCount = valCount + 1;
-                    [~,errVal] = o.Test(Xval,Yval);
-                    if o.regression
-                        METRIC_val(valCount) = errVal.MSE;
-                    else
-                        METRIC_val(valCount) = errVal.ACC;
-                    end
-                    LOSS_val(valCount) = errVal.LOSS;
+                    [~,metric_val] = o.Test(Xval,Yval);
+                    METRIC_val(valCount) = metric_val.MSEorACC; % (reg=MSE),(clas=ACC)
+                    LOSS_val(valCount) = metric_val.LOSS;
                     if (valCount>1) && (LOSS_val(valCount) < bestValLoss)
                         netBest = o;
                         bestValLoss = LOSS_val(valCount);
@@ -300,7 +291,11 @@ classdef MSOFNNplus
 
                 % Plot
                 if (o.Plot) && (epoch > 1)
-                    o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), METRIC_val(1:valCount), LOSS_val(1:valCount), valEpochs(1:valCount))
+                    if (opts.validationSplitPercent || exist("opts.Xval","var"))
+                        o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), METRIC_val(1:valCount), LOSS_val(1:valCount), valEpochs(1:valCount))
+                    else
+                        o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), [], [], [])
+                    end
                 end
 
                 o.TrainedEpoch = epoch;
@@ -345,14 +340,15 @@ classdef MSOFNNplus
         end
 
         %% ----------------------------- TEST -----------------------------
-        function [yhat, err, lambda] = Test(net,Xtest,Ytest,opts)
+        function [yhat, metrics, lambda] = Test(net,Xtest,Ytest,opts)
             arguments
                 net
                 Xtest
                 Ytest = []
+                opts.MetricReport {mustBeTextScalar} = "none" % ["none", "all"]
                 opts.Plot {logical} = 0
             end
-            err = [];
+            metrics = [];
             lambda = cell(1,net.n_Layer);
 
             Yexist = 1;
@@ -378,26 +374,18 @@ classdef MSOFNNplus
             if net.classification,  yhat = net.GetClassLabel(yhat); end
 
             if Yexist
-                % determin Metric (required Ytest)
-                [metric,otherMetrics] = net.GetMetric(yhat,Ytest);
-                err.LOSS = Loss;
-                if net.regression
-                    err.MSE = metric;
-                    err.RMSE = sqrt(metric);
-                    STD = std(Ytest);
-                    err.NDEI = err.RMSE / STD;
-                    err.NDEI2 = err.RMSE / (sqrt(net.nTrData)*(STD));
-                    if opts.Plot
-                        figure
+                % METRIC
+                metrics = net.GetMetric(yhat,Ytest,opts.MetricReport);
+                if ~isstruct(metrics)
+                    metrics = struct('MSEorACC',metrics);
+                    metrics.LOSS = Loss;
+                end
+                % PLOT
+                if opts.Plot
+                    figure
+                    if net.regression
                         plot(Ytest), hold on, plot(yhat)
-                    end
-                elseif net.classification
-                    err.ACC = metric;
-                    err.PREC = otherMetrics.PREC;
-                    err.RECALL =  otherMetrics.RECALL;
-                    err.F1SCORE =  otherMetrics.F1SCORE;
-                    if opts.Plot
-                        figure
+                    elseif net.classification
                         confusionchart(yhat,Ytest)
                     end
                 end
@@ -843,7 +831,7 @@ classdef MSOFNNplus
             end
         end
 
-        %% ----------------------- Loss Function ---------------------------
+        %% ----------------------- Loss  ---------------------------
         function loss = GetLoss(o,yh,y)
             epsilon = 1e-15;  % Small constant to avoid numerical instability
             switch lower(o.ProblemType)
@@ -853,6 +841,7 @@ classdef MSOFNNplus
                     loss = sum((yh - y).^2,"all") / size(y,2);
                 case 'binary-classification'
                     yh = max(epsilon, min(1 - epsilon, yh));  % Clip to avoid log(0)
+                    % binary_cross_entropy_loss = -sum(y .* log(predicted_probabilities) + (1 - y) .* log(1 - predicted_probabilities)) / numel(y);
                     loss = -mean(y .* log(yh) + (1 - y) .* log(1 - yh));
                 case 'multiclass-classification'
                     yh = max(epsilon, yh);  % Clip to avoid log(0)
@@ -862,51 +851,71 @@ classdef MSOFNNplus
                     error("Invalid 'ProblemType'.")
             end
         end
-        %% ---------------------- Metrics Function -------------------------
-        function [metric,OtherMetric] = GetMetric(o,yh,y)
-            OtherMetric = [];
+
+        %% ---------------------- Metrics -------------------------
+        function metrics = GetMetric(o,yh,y,get_all)
+            if nargin < 4, get_all = ""; end
             if o.regression
-                metric = mse(yh,y); % MSE
-            elseif o.classification
-                cm = confusionmat(yh,y);
-                metric = sum(diag(cm)) / sum(cm,"all"); % ACCURACY
-                
-                tp_m = diag(cm);
-                for i = 1:size(cm,1)
-                    TP = tp_m(i);
-                    FP = sum(cm(:, i), 1) - TP;
-                    FN = sum(cm(i, :), 2) - TP;
-                    TN = sum(cm(:)) - TP - FP - FN;
-
-                    % Accuracy = (TP+TN)./(TP+FP+TN+FN);
-
-                    TPR(i) = TP./(TP + FN);%tp/actual positive  RECALL SENSITIVITY
-                    if isnan(TPR(i))
-                        TPR(i) = 0;
-                    end
-                    PPV(i) = TP./ (TP + FP); % tp / predicted positive PRECISION
-                    if isnan(PPV(i))
-                        PPV(i) = 0;
-                    end
-                    TNR(i) = TN./ (TN+FP); %tn/ actual negative  SPECIFICITY
-                    if isnan(TNR(i))
-                        TNR(i) = 0;
-                    end
-                    FPR = FP./ (TN+FP);
-                    if isnan(FPR)
-                        FPR = 0;
-                    end
-                    FScore(i) = (2*(PPV(i) * TPR(i))) / (PPV(i)+TPR(i));
-
-                    if isnan(FScore(i))
-                        FScore(i) = 0;
-                    end
+                if strcmpi(get_all,"all")
+                    % Mean Squared Error (MSE)
+                    metrics.MSE = mse(yh,y);
+                    % Root Mean Squared Error (RMSE)
+                    metrics.RMSE = sqrt(metrics.MSE);
+                    % NDEI
+                    STD = std(y);
+                    metrics.NDEI = metrics.RMSE / STD;
+                    metrics.NDEI2 = metrics.RMSE / (sqrt(o.nTrData)*(STD));
+                    % Mean Absolute Error (MAE)
+                    metrics.mae = mae(y,yh);
+                    % R-squared (R²)
+                    metrics.R2 = 1 - (sum((y - yh).^2) / sum((y - mean(yh)).^2));
+                    % Mean Absolute Percentage Error (MAPE)
+                    metrics.MAPE = mean(abs((y - yh) ./ y) * 100);
+                    % Explained Variance Score
+                    metrics.explained_variance = 1 - (var(y - yh) / var(y));
+                    % Explained Variance Score
+                    metrics.explainedVariance = mean(1 - (sum((y - yh).^2) ./ sum((y - mean(yh)).^2)));
+                    % Mean Squared Logarithmic Error (MSLE)
+                    metrics.msle = mean( mean((log1p(y) - log1p(yh)).^2));
+                    % Mean Bias Deviation (MBD)
+                    metrics.mbd = mean( mean(y - yh));
+                    % Normalized Root Mean Squared Error (NRMSE)
+                    range = max(y) - min(y);
+                    metrics.nrmse = mean( metrics.rmse ./ range);
+                    % Mean Percentage Error (MPE)
+                    metrics.mpe =  mean(mean((y - yh) ./ y) * 100);
+                    % Mean Absolute Percentage Error (MAPE)
+                    metrics.mape =  mean(mean(abs((y - yh) ./ y)) * 100);
+                else
+                    metrics = mse(yh,y);
                 end
 
-                % Macro Averages
-                OtherMetric.PREC = mean(PPV);
-                OtherMetric.RECALL = mean(TPR);
-                OtherMetric.F1SCORE = mean(FScore);
+            elseif o.classification
+                cm = confusionmat(y, yh);
+                nClass = size(cm,1);
+                [TP,FP,FN,TN] = deal(zeros(1,nClass));
+                for i = 1:nClass
+                    TP(i) = cm(i,i);
+                    FP(i) = sum(cm(:, i), 1) - TP(i);
+                    FN(i) = sum(cm(i, :), 2) - TP(i);
+                    TN(i) = sum(cm(:)) - TP(i) - FP(i) - FN(i);
+                end
+                if strcmpi(get_all,"all")
+                    % Accuracy; [0,1]
+                    metrics.ACC = sum(TP) / sum(cm,"all");
+                    % Precision; [0,1]
+                    metrics.PREC = sum(TP) / (sum(TP) + sum(FP)); % macro = mean(TP ./ (TP + FP));
+                    % Recall; [0,1]
+                    metrics.RECALL = sum(TP) / (sum(TP) + sum(FN)); % macro = mean(TP ./ (TP + FN));
+                    % F1 Score; [0,1]
+                    metrics.F1SCORE = 2 * (metrics.PREC .* metrics.RECALL) / (metrics.PREC + metrics.RECALL);
+                    % Cohen's Kappa
+                    metrics.KAPPA = mean(2*(TN.*TP - FN.*FP)./(TP+FP).*(TN+FP)+(TP+FN).*(TN+FN));
+                    % Matthews Correlation Coefficient (MCC);  [−1,1]
+                    metrics.MCC = mean((TN.*TP - FN.*FP)./sqrt((TP+FP).*(TP+FN).*(TN+FP).*(TN+FN)));
+                else
+                    metrics = sum(TP) / sum(cm,"all");
+                end
             else
                 error("Invalid 'ProblemType'.")
             end
