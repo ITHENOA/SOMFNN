@@ -43,6 +43,7 @@ classdef MSOFNNplus
         maxY
         minClassLabel
         MultiClassMode
+        onehotState = 0;
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -104,7 +105,8 @@ classdef MSOFNNplus
 
                     if o.MultiClassMode == "softmax"
                         n_node_end = n_class;
-                        Ytr = o.EncodeOneHot(Ytr);
+                        % Ytr = o.EncodeOneHot(Ytr);
+                        % o.onehotState = 1;
                     end
                 end
             else % Regression
@@ -336,8 +338,10 @@ classdef MSOFNNplus
             end
 
             % save network
+            o.onehotState = 0;
             if o.validation_flag && epoch>1
                 trained_net.last = o;
+                netBest.onehotState = 0;
                 trained_net.best = netBest;
                 valData.x = Xval;
                 valData.y = Yval;
@@ -357,7 +361,7 @@ classdef MSOFNNplus
             % Epoch = [epoch; bestIdx; nan];
             % table(METRIC_tr,Value,Epoch)
             % o.MSE_report = sprintf("[Mean:%.3f, Best:%.3f]",mean(MSE_ep),min(MSE_ep));
-
+            
         end
 
         %% ----------------------------- TEST -----------------------------
@@ -383,6 +387,9 @@ classdef MSOFNNplus
             % Forward
             for l = 1:net.n_Layer
                 lambda{l} =  net.GetLambda(x, net.Layer{l}, 1:net.n_rulePerLayer(l));
+                if isnan(sum(lambda{l},"all"))
+                    0
+                end
                 x = net.GetOutput(net.Layer{l}, x, lambda{l});
             end
             % un normalize if needed
@@ -418,7 +425,7 @@ classdef MSOFNNplus
         %%  ----------------------------- main -----------------------------
         function [o,yhat] = Main(o,x,y,it)
             % forward >> Create Rules and estimaye final output
-            [yhat,o,BP_pars] = o.Forward(x,y);
+            [yhat,o,BP_pars] = o.Forward(x);
             % backward >> update A matrix of each rule
             o = o.Backward(yhat,y,BP_pars,it);
         end
@@ -482,7 +489,7 @@ classdef MSOFNNplus
                     elseif type == "MeanMinesStd"
                         removedRules = (lambdas{l} < mean(lambdas{l}) - parameter * std(lambdas{l}));
                     elseif type == "new"
-                        removedRules = (lambdas{l} < (mean(lambdas{l})+prctile(lambdas{l},parameter*100))/(2+std(lambdas{l})));
+                        removedRules = (lambdas{l} < (mean(lambdas{l})+prctile(lambdas{l},50))/(2+std(lambdas{l})));
                     else
                         error("invalid method name")
                     end
@@ -510,7 +517,7 @@ classdef MSOFNNplus
     %% PRIVATE FUNCTIONS
     methods (Access=private)
         %%  ------------------------ FORWARD PATH  ------------------------
-        function [y,o,BP_pars] = Forward(o,x,yorg)
+        function [y,o,BP_pars] = Forward(o,x)
             % x : mini batch data : size(#features,batch_size)
 
             % Layer
@@ -647,8 +654,14 @@ classdef MSOFNNplus
         %% ------------------------- BACKWARD PATH -------------------------
         % update A matrix of each layer
         function o = Backward(o,yh,y,BP_pars,it)
+            %   INPUT
+            % yh : (nDim,MB)
+            % y : (nDim,MB)
+            % BP_pars : backpropagation params calculated in forward path
+            % it : number of passes iterations
 
             if o.classification_flag == 2 && o.MultiClassMode == "softmax"
+                y = o.EncodeOneHot(y')';
                 yh = softmax(yh);
             end
 
@@ -789,7 +802,7 @@ classdef MSOFNNplus
             % lam : Firing Strength of Cluster(n) with x : (#rule,#data)
 
             D = o.GetDensity(x,l,n);      % D(#rule,#data)
-            lam = D ./ sum(D);          % lam(#rule,#data)
+            lam = D ./ max(sum(D),eps);          % lam(#rule,#data)
         end
 
         %% -------------------- LOCAL DENSITY FUNCTION --------------------
@@ -853,8 +866,12 @@ classdef MSOFNNplus
             end
         end
 
-        %% ----------------------- Loss  ---------------------------
+        %% ---------------------------- Loss  -----------------------------
         function loss = GetLoss(o,yh,y)
+            %   INPUT
+            % yh : (nData,nDim)
+            % y : (nData,nDim)
+
             if o.regression_flag % Mean of Squared Error
                 loss = mse(yh,y);
 
@@ -866,13 +883,15 @@ classdef MSOFNNplus
 
                 if o.MultiClassMode == "round"
                     y = softmax(y);
+                elseif o.MultiClassMode == "softmax"
+                    y = o.EncodeOneHot(y);
                 end
                 yh = softmax(yh')';
                 loss = -mean(sum(y .* log(yh + eps),2));
             end
         end
 
-        %% ---------------------- Metrics -------------------------
+        %% --------------------------- Metrics ----------------------------
         function metrics = GetMetric(o,yh,y,get_all)
             if nargin < 4, get_all = ""; end
             if o.regression_flag
@@ -911,9 +930,6 @@ classdef MSOFNNplus
                 end
 
             elseif o.classification_flag
-                if o.classification_flag == 2 && o.MultiClassMode == "softmax"
-                    y = o.DecodeOneHot(y);
-                end
                 cm = confusionmat(y, yh);
                 nClass = size(cm,1);
                 [TP,FP,FN,TN] = deal(zeros(1,nClass));
@@ -937,7 +953,11 @@ classdef MSOFNNplus
                     chanceAgree = sum((sum(cm,1)/sum(cm(:))) .* (sum(cm,2)/sum(cm(:))));
                     metrics.KAPPA = (agree - chanceAgree) / (1 - chanceAgree);
                     % Matthews Correlation Coefficient (MCC);  [−1,1]
-                    metrics.MCC = mean((TN.*TP - FN.*FP)./sqrt((TP+FP).*(TP+FN).*(TN+FP).*(TN+FN)));
+                    s = sum(cm(:));
+                    c = sum(TP);
+                    p = sum(cm,1);
+                    t = sum(cm,2);
+                    metrics.MCC = (c.*s - sum(p.*t')) ./ (sqrt((s^2-sum(p.^2)).*(s^2-sum(t.^2)))+eps);
                 else
                     metrics = sum(TP) / sum(cm,"all");
                 end
@@ -1025,8 +1045,13 @@ classdef MSOFNNplus
             drawnow;
         end
 
-        %% one-hot-vector
+        %% ------------------------- one-hot-vector -----------------------
         function y_onehot = EncodeOneHot(~,y)
+            %   INPUT
+            % y : (nData,1)
+            %   OUTPUT
+            % y_onehot : (nData,nClass)
+
             uniqs = unique(y);
             nClass = numel(uniqs);
             y_onehot = zeros(size(y,1),nClass);
@@ -1034,6 +1059,7 @@ classdef MSOFNNplus
                 y_onehot(y==uniqs(i),i) = 1;
             end
         end
+
         function y = DecodeOneHot(o,y_onehot)
             nClass = size(y_onehot,2);
             y = zeros(size(y_onehot,1),1);
