@@ -42,6 +42,7 @@ classdef MSOFNNplus
         minY
         maxY
         minClassLabel
+        MultiClassMode
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -66,6 +67,7 @@ classdef MSOFNNplus
                 opts.adampar_beta2 = 0.999
                 opts.adampar_m0 = 0
                 opts.adampar_v0 = 0
+                opts.MultiClassMode %[round,softmax]
             end
 
             % Save to object
@@ -81,24 +83,29 @@ classdef MSOFNNplus
             o.BatchNormType = opts.BatchNormType;
             o.DataNormalize = opts.DataNormalize;
             o.SolverName = opts.SolverName;
+            o.MultiClassMode = opts.MultiClassMode;
 
             % Validate String Variables
             o = o.StringValidate();
-
             n_node_end = size(Ytr,2);
             % Problem Type
             uniqOutputs = unique(Ytr);
             if all(mod(Ytr, 1) == 0) % Classification
-                if all(ismember(uniqOutputs, [0, 1]))
+                n_class = numel(uniqOutputs);
+                o.minClassLabel = min(uniqOutputs);
+                if n_class == 2 %all(ismember(uniqOutputs, [0, 1]))
                     disp('Problem Type: Binary Classification');
                     o.ProblemType = "Binary-Classification";
                     o.classification_flag = 1;
-                elseif numel(uniqOutputs) > 2
+                elseif n_class > 2
                     disp('Problem Type: Multiclass Classification');
                     o.ProblemType = "Multiclass-Classification";
                     o.classification_flag = 2;
-                    % n_node_end = numel(uniqOutputs);
-                    o.minClassLabel = min(uniqOutputs);
+
+                    if o.MultiClassMode == "softmax"
+                        n_node_end = n_class;
+                        Ytr = o.EncodeOneHot(Ytr);
+                    end
                 end
             else % Regression
                 if size(Ytr,2) == 1
@@ -299,7 +306,7 @@ classdef MSOFNNplus
                 if (o.Plot) && (epoch > 1)
                     if o.classification_flag
                         if o.validation_flag
-                            o.GetPlot(METRIC_tr(1:epoch)*100, exp(LOSS_tr(1:epoch)), METRIC_val(1:valCount)*100, exp(LOSS_val(1:valCount)), valEpochs(1:valCount), ["Acuracy","Loss"])
+                            o.GetPlot(METRIC_tr(1:epoch)*100, LOSS_tr(1:epoch), METRIC_val(1:valCount)*100, LOSS_val(1:valCount), valEpochs(1:valCount), ["Acuracy","Loss"])
                         else
                             o.GetPlot(METRIC_tr(1:epoch)*100, LOSS_tr(1:epoch), [], [], [], ["Acuracy","Loss"])
                         end
@@ -393,6 +400,8 @@ classdef MSOFNNplus
                 if ~isstruct(metrics)
                     metrics = struct('MSEorACC',metrics);
                     metrics.LOSS = Loss;
+                else
+                    metrics.LOSS = Loss;
                 end
                 % PLOT
                 if opts.Plot
@@ -409,9 +418,9 @@ classdef MSOFNNplus
         %%  ----------------------------- main -----------------------------
         function [o,yhat] = Main(o,x,y,it)
             % forward >> Create Rules and estimaye final output
-            [yhat,o,BP_pars] = o.Forward(x);
+            [yhat,o,BP_pars] = o.Forward(x,y);
             % backward >> update A matrix of each rule
-            [yhat,o] = o.Backward(yhat,y,BP_pars,it);
+            o = o.Backward(yhat,y,BP_pars,it);
         end
 
         %% ------------------------ Rule Remover ---------------------------
@@ -501,7 +510,7 @@ classdef MSOFNNplus
     %% PRIVATE FUNCTIONS
     methods (Access=private)
         %%  ------------------------ FORWARD PATH  ------------------------
-        function [y,o,BP_pars] = Forward(o,x)
+        function [y,o,BP_pars] = Forward(o,x,yorg)
             % x : mini batch data : size(#features,batch_size)
 
             % Layer
@@ -529,7 +538,7 @@ classdef MSOFNNplus
 
                 % determin input of next layer
                 [x, AfAx, AfpAx] = o.GetOutput(o.Layer{l}, x, lambda_l);
-
+                
                 % calculate for backward process
                 BP_pars.AfAx_4D{l} = reshape(AfAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
                 BP_pars.AfpAx_4D{l} = reshape(AfpAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
@@ -637,12 +646,13 @@ classdef MSOFNNplus
 
         %% ------------------------- BACKWARD PATH -------------------------
         % update A matrix of each layer
-        function [y_hat,o] = Backward(o,y_hat,y_target,BP_pars,it)
-            % if o.classification
-            %     y_hat = o.GetClassLabel(y_hat);
-            % end
-            DeDy = y_hat - y_target;  % (wl,MB)
-            % ek = DeDy' * DeDy / 2;
+        function o = Backward(o,yh,y,BP_pars,it)
+
+            if o.classification_flag == 2 && o.MultiClassMode == "softmax"
+                yh = softmax(yh);
+            end
+
+            DeDy = yh - y;  % (wl,MB)
 
             d = cell(1,o.n_Layer);
             d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
@@ -670,7 +680,7 @@ classdef MSOFNNplus
                 %(W,M+1,N,MB)=(1,1,N,MB).*(((W,1,1,MB).*(W,1,N,MB))*(M+1,1,1,MB))
                 DeDA = lambda_4D .* PMT((d{l} .* AfpAx_4D),PT(xbar_4D));
                 %%%%% sum or mean %%%%%
-                DeDA = sum(DeDA,4); %(W,M+1,N,MB)=>(W,M+1,N,1)
+                DeDA = mean(DeDA,4); %(W,M+1,N,MB)=>(W,M+1,N,1)
                 DeDA = reshape(permute(DeDA,[1 3 2]),W*N,M+1); %(W,M+1,N,1)=>(W*N,M+1,1,1)
 
                 %%% Adam Algorithm
@@ -707,14 +717,16 @@ classdef MSOFNNplus
             end
 
             %%%%%%%%%%% Nested Functions %%%%%%%%%%%
-            function out = PMT(A,B,C)
+            % pagemtimes
+            function out = PMT(A,B,C) 
                 if nargin == 2
                     out = pagemtimes(A,B);
                 elseif nargin == 3
                     out = pagemtimes(pagemtimes(A,B),C);
                 end
             end
-            function out = PT(A)
+            % pagetranspose
+            function out = PT(A) 
                 out = pagetranspose(A);
             end
         end
@@ -843,19 +855,20 @@ classdef MSOFNNplus
 
         %% ----------------------- Loss  ---------------------------
         function loss = GetLoss(o,yh,y)
-            switch lower(o.ProblemType)
-                case 'miso-regression'
-                    loss = sum((yh - y).^2,1) / 2;
-                case 'mimo-regression'
-                    loss = sum((yh - y).^2,"all") / size(y,2);
-                case 'binary-classification'
-                    loss = -sum(y .* log(yh + eps) + (1 - y) .* log(1 - yh + eps)) / numel(y);
-                case 'multiclass-classification'
-                    y = y./sum(y);
-                    yh = yh./sum(yh);
-                    loss = -sum(y .* log(yh + eps)) / numel(y);
-                otherwise
-                    error("Invalid 'ProblemType'.")
+            if o.regression_flag % Mean of Squared Error
+                loss = mse(yh,y);
+
+            elseif o.classification_flag == 1 % Logestic Regression
+                loss = -sum(y .* log(yh + eps) + (1 - y) .* log(1 - yh + eps)) / numel(y);
+
+            elseif o.classification_flag == 2 % Cross Entropy
+                % y : one hot vectors
+
+                if o.MultiClassMode == "round"
+                    y = softmax(y);
+                end
+                yh = softmax(yh')';
+                loss = -mean(sum(y .* log(yh + eps),2));
             end
         end
 
@@ -888,7 +901,7 @@ classdef MSOFNNplus
                     metrics.mbd = mean( mean(y - yh));
                     % Normalized Root Mean Squared Error (NRMSE)
                     range = max(y) - min(y);
-                    metrics.nrmse = mean( metrics.rmse ./ range);
+                    metrics.nrmse = mean( metrics.RMSE ./ range);
                     % Mean Percentage Error (MPE)
                     metrics.mpe =  mean(mean((y - yh) ./ y) * 100);
                     % Mean Absolute Percentage Error (MAPE)
@@ -898,6 +911,9 @@ classdef MSOFNNplus
                 end
 
             elseif o.classification_flag
+                if o.classification_flag == 2 && o.MultiClassMode == "softmax"
+                    y = o.DecodeOneHot(y);
+                end
                 cm = confusionmat(y, yh);
                 nClass = size(cm,1);
                 [TP,FP,FN,TN] = deal(zeros(1,nClass));
@@ -932,20 +948,22 @@ classdef MSOFNNplus
 
         %% ------------------------ Choose Class ---------------------------
         function yh = GetClassLabel(o,yh)
-            if strcmpi(o.ProblemType,'binary-classification')
+            if o.classification_flag == 1
                 yh(yh > 0.5) = 1;
                 yh(yh <= 0.5) = 0;
-            elseif strcmpi(o.ProblemType,'multiclass-classification')
-                %%% MAX
-                % [~,yh] = max(yh,[],2);
-                %%% SOFTMAX
-                % [~,yh] = max(softmax(yh),[],2);
-                % if o.minClassLabel == 0
-                %     yh = yh - 1;
-                % end
-                yh = round(yh);
-            else
-                error("Invalid 'ProblemType'.")
+            elseif o.classification_flag == 2
+                
+                if o.MultiClassMode == "softmax"
+                    [~,yh] = max(softmax(yh'));
+                    if o.minClassLabel == 0
+                        yh = yh - 1;
+                    elseif o.minClassLabel > 1
+                        yh = yh + o.minClassLabel - 1;
+                    end
+                    yh = yh';
+                else
+                    yh = round(yh);
+                end
             end
         end
 
@@ -978,84 +996,56 @@ classdef MSOFNNplus
 
         %% ------------------------------ PLOT -----------------------------
         function GetPlot(o,uptr,downtr,upval,downval,xval,labels)
-                subplot(2,2,[1 2])
-                plot(1:numel(uptr), uptr, 'DisplayName', "Training "+labels(1),'LineWidth',1.5);
-                xlabel('Epoch'); ylabel(labels(1)); title('Training Process'); grid on
-                if o.classification_flag
-                    ylim([min([uptr,upval]),105])
-                    legend('show','Location','southeast')
-                else
-                    ylim([min([uptr,upval]),max([uptr,upval])])
-                end
-                if o.validation_flag
-                    hold on;
-                    % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-                    line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(1));
-                    hold off;
-                end
+            subplot(2,2,[1 2])
+            plot(1:numel(uptr), uptr, 'DisplayName', "Training "+labels(1),'LineWidth',1.5);
+            xlabel('Epoch'); ylabel(labels(1)); title('Training Process'); grid on
+            if o.classification_flag
+                ylim([min([uptr,upval]),105])
+                legend('show','Location','southeast')
+            else
+                ylim([min([uptr,upval]),max([uptr,upval])])
+            end
+            if o.validation_flag
+                hold on;
+                % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
+                line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(1));
+                hold off;
+            end
 
-                subplot(2,2,[3 4])
-                plot(1:numel(downtr), downtr, 'DisplayName', "Training "+labels(2),'LineWidth',1.5);
-                xlabel('Epoch'); ylabel(labels(2)); legend('show'); grid on
-                ylim([min([downtr,downval]),max([downtr,downval])])
-                if o.validation_flag
-                    hold on
-                    % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-                    line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(2));
-                    hold off
-                end
-                drawnow;
+            subplot(2,2,[3 4])
+            plot(1:numel(downtr), downtr, 'DisplayName', "Training "+labels(2),'LineWidth',1.5);
+            xlabel('Epoch'); ylabel(labels(2)); legend('show'); grid on
+            ylim([min([downtr,downval]),max([downtr,downval])])
+            if o.validation_flag
+                hold on
+                % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
+                line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(2));
+                hold off
+            end
+            drawnow;
+        end
 
-
-
-
-
-            % if endsWith(lower(o.ProblemType),'regression') % regression
-            %     subplot(2,2,[1 2])
-            %     plot(1:numel(uptr), uptr, 'DisplayName', 'Training RMSE','LineWidth',1.5);
-            %     ylabel('RMSE'); title('Training Process'); legend('show'); grid on
-            %     if o.validation_flag
-            %         hold on;
-            %         % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-            %         line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation RMSE');
-            %         hold off;
-            %     end
-            % 
-            %     subplot(2,2,[3 4])
-            %     plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
-            %     xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
-            %     if o.validation_flag
-            %         hold on
-            %         % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-            %         line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
-            %         hold off
-            %     end
-            %     drawnow;
-            % else % classification
-            %     subplot(2,2,[1 2])
-            %     plot(1:numel(uptr), uptr*100, 'DisplayName', 'Training Accuracy','LineWidth',1.5);
-            %     ylabel('Accuracy'); title('Training Process'); legend('show','Location','southeast'); grid on
-            %     ylim([min(uptr*100),105])
-            %     if o.validation_flag
-            %         hold on;
-            %         % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-            %         line(xval, upval*100, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Accuracy');
-            %         hold off;
-            %     end
-            % 
-            %     subplot(2,2,[3 4])
-            %     plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
-            %     xlabel('Epoch'); ylabel('Loss'); legend('show','Location','northeast'); grid on
-            %     ylim([min(downtr),max(downtr)])
-            %     if o.validation_flag
-            %         hold on
-            %         % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-            %         line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
-            %         hold off
-            %     end
-            %     drawnow;
-            % end
-
+        %% one-hot-vector
+        function y_onehot = EncodeOneHot(~,y)
+            uniqs = unique(y);
+            nClass = numel(uniqs);
+            y_onehot = zeros(size(y,1),nClass);
+            for i = 1:nClass
+                y_onehot(y==uniqs(i),i) = 1;
+            end
+        end
+        function y = DecodeOneHot(o,y_onehot)
+            nClass = size(y_onehot,2);
+            y = zeros(size(y_onehot,1),1);
+            classLabels = 1:nClass;
+            if o.minClassLabel == 0
+                classLabels = classLabels - 1;
+            elseif o.minClassLabel > 1
+                classLabels = classLabels + o.minClassLabel - 1;
+            end
+            for i = 1:nClass
+                y(logical(y_onehot(:,i))) = classLabels(i);
+            end
         end
 
     end
