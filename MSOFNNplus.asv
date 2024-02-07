@@ -31,13 +31,14 @@ classdef MSOFNNplus
         % n_featureX
         % n_featureY
         dataSeenCounter
-        lambda_MB % {layer}(rule,MB)
-        AF_AX % AF(A*xbar) : {layer}(Wl,1)
-        DlamDx % {layer}(Ml,1)
-        AFp_AX % derivative of AF : {layer}()
-        adapar % parameters of Adam algorithm
-        classification = 0
-        regression = 0
+        % lambda_MB                   % {layer}(rule,MB)
+        % AF_AX                       % AF(A*xbar) : {layer}(Wl,1)
+        % DlamDx                      % {layer}(Ml,1)
+        % AFp_AX                      % derivative of AF : {layer}()
+        adapar                      % parameters of Adam algorithm
+        classification_flag = 0     % 1:binery, 2:multiclass
+        regression_flag = 0         % 1:sequence-to-one(MISO), 2:Sequence-to-sequence(MIMO)
+        validation_flag = 0         % 1:using validation
         minY
         maxY
         minClassLabel
@@ -88,24 +89,26 @@ classdef MSOFNNplus
             % Problem Type
             uniqOutputs = unique(Ytr);
             if all(mod(Ytr, 1) == 0) % Classification
-                o.classification = 1;
                 if all(ismember(uniqOutputs, [0, 1]))
                     disp('Problem Type: Binary Classification');
                     o.ProblemType = "Binary-Classification";
+                    o.classification_flag = 1;
                 elseif numel(uniqOutputs) > 2
                     disp('Problem Type: Multiclass Classification');
                     o.ProblemType = "Multiclass-Classification";
+                    o.classification_flag = 2;
                     % n_node_end = numel(uniqOutputs);
                     o.minClassLabel = min(uniqOutputs);
                 end
             else % Regression
-                o.regression = 1;
                 if size(Ytr,2) == 1
                     disp('Problem Type: MISO Regression');
                     o.ProblemType = "MISO-Regression";
+                    o.regression_flag = 1;
                 else
                     disp('Problem Type: MIMO Regression');
                     o.ProblemType = "MIMO-Regression";
+                    o.regression_flag = 2;
                 end
             end
 
@@ -192,8 +195,11 @@ classdef MSOFNNplus
             end
             o = o.StringValidate();
             if o.Plot, figure; end
+            if (opts.validationSplitPercent || exist("opts.Xval","var"))
+                o.validation_flag = 1;
+            end
             valData = [];
-            if opts.validationSplitPercent || exist("opts.Xval","var") % Validation
+            if o.validation_flag % Validation
                 if exist("opts.Xval","var")
                     Xval = opts.Xval;
                     Yval = opts.Yval;
@@ -259,7 +265,7 @@ classdef MSOFNNplus
                 LOSS_tr(epoch) = o.GetLoss(yhat,o.Ytrain);
 
                 % class label detection (if needed)
-                if o.classification
+                if o.classification_flag
                     yhat = o.GetClassLabel(yhat);
                 end
 
@@ -269,7 +275,7 @@ classdef MSOFNNplus
                 % verbose
                 if o.Verbose
                     if ~rem(epoch,o.Verbose)
-                        if o.regression
+                        if o.regression_flag
                             fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), sqrt(METRIC_tr(epoch)), LOSS_tr(epoch))
                         else
                             fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch))
@@ -278,7 +284,7 @@ classdef MSOFNNplus
                 end
 
                 % validation
-                if (opts.validationSplitPercent || exist("opts.Xval","var")) && ismember(epoch,valEpochs)
+                if o.validation_flag && ismember(epoch,valEpochs)
                     valCount = valCount + 1;
                     [~,metric_val] = o.Test(Xval,Yval);
                     METRIC_val(valCount) = metric_val.MSEorACC; % (reg=MSE),(clas=ACC)
@@ -291,10 +297,18 @@ classdef MSOFNNplus
 
                 % Plot
                 if (o.Plot) && (epoch > 1)
-                    if (opts.validationSplitPercent || exist("opts.Xval","var"))
-                        o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), METRIC_val(1:valCount), LOSS_val(1:valCount), valEpochs(1:valCount))
-                    else
-                        o.GetPlot(opts, METRIC_tr(1:epoch), LOSS_tr(1:epoch), [], [], [])
+                    if o.classification_flag
+                        if o.validation_flag
+                            o.GetPlot(METRIC_tr(1:epoch)*100, exp(LOSS_tr(1:epoch)), METRIC_val(1:valCount)*100, exp(LOSS_val(1:valCount)), valEpochs(1:valCount), ["Acuracy","Loss"])
+                        else
+                            o.GetPlot(METRIC_tr(1:epoch)*100, LOSS_tr(1:epoch), [], [], [], ["Acuracy","Loss"])
+                        end
+                    elseif o.regression_flag
+                        if o.validation_flag
+                            o.GetPlot(METRIC_tr(1:epoch), sqrt(METRIC_tr(1:epoch)), METRIC_val(1:valCount), sqrt(METRIC_val(1:valCount)), valEpochs(1:valCount), ["MSE","RMSE"])
+                        else
+                            o.GetPlot(METRIC_tr(1:epoch), sqrt(METRIC_tr(1:epoch)), [], [], [], ["MSE","RMSE"])
+                        end
                     end
                 end
 
@@ -306,7 +320,7 @@ classdef MSOFNNplus
 
             % Apply Rule Remover (if needed)
             if opts.ApplyRuleRemover
-                if (opts.validationSplitPercent || exist("opts.Xval","var")) && epoch>1
+                if o.validation_flag && epoch>1
                     o = o.RuleRemover(Xval,0.5,0.5);
                     netBest = netBest.RuleRemover(Xval,0.5,0.5);
                 else
@@ -315,7 +329,7 @@ classdef MSOFNNplus
             end
 
             % save network
-            if (opts.validationSplitPercent || exist("opts.Xval","var")) && epoch>1
+            if o.validation_flag && epoch>1
                 trained_net.last = o;
                 trained_net.best = netBest;
                 valData.x = Xval;
@@ -371,7 +385,7 @@ classdef MSOFNNplus
             if Yexist, Loss = net.GetLoss(yhat,Ytest); end
 
             % prepare output for classification problem
-            if net.classification,  yhat = net.GetClassLabel(yhat); end
+            if net.classification_flag,  yhat = net.GetClassLabel(yhat); end
 
             if Yexist
                 % METRIC
@@ -383,9 +397,9 @@ classdef MSOFNNplus
                 % PLOT
                 if opts.Plot
                     figure
-                    if net.regression
+                    if net.regression_flag
                         plot(Ytest), hold on, plot(yhat)
-                    elseif net.classification
+                    elseif net.classification_flag
                         confusionchart(yhat,Ytest)
                     end
                 end
@@ -502,15 +516,12 @@ classdef MSOFNNplus
                     % o.Layer{l}.X(1:o.Layer{l}.M + 1, k) = [1;x(:,k)];
                 end
 
-
                 % calculate for backward process
-
                 N = o.Layer{l}.N;
                 o.n_rulePerLayer(l) = N;
                 n = 1:N;
                 M = o.Layer{l}.M;
                 W = o.Layer{l}.W;
-
 
                 lambda_l = o.GetLambda(x,o.Layer{l},n); %(N,MB)
                 BP_pars.lambda_4D{l} = reshape(lambda_l, 1,1,N,MB); %(N,MB)=>(1,1,N,MB)
@@ -522,7 +533,6 @@ classdef MSOFNNplus
                 % calculate for backward process
                 BP_pars.AfAx_4D{l} = reshape(AfAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
                 BP_pars.AfpAx_4D{l} = reshape(AfpAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
-
             end
             y = x;    % last output of layers
         end
@@ -833,20 +843,17 @@ classdef MSOFNNplus
 
         %% ----------------------- Loss  ---------------------------
         function loss = GetLoss(o,yh,y)
-            epsilon = 1e-15;  % Small constant to avoid numerical instability
             switch lower(o.ProblemType)
                 case 'miso-regression'
                     loss = sum((yh - y).^2,1) / 2;
                 case 'mimo-regression'
                     loss = sum((yh - y).^2,"all") / size(y,2);
                 case 'binary-classification'
-                    yh = max(epsilon, min(1 - epsilon, yh));  % Clip to avoid log(0)
-                    % binary_cross_entropy_loss = -sum(y .* log(predicted_probabilities) + (1 - y) .* log(1 - predicted_probabilities)) / numel(y);
-                    loss = -mean(y .* log(yh) + (1 - y) .* log(1 - yh));
+                    loss = -sum(y .* log(yh + eps) + (1 - y) .* log(1 - yh + eps)) / numel(y);
                 case 'multiclass-classification'
-                    yh = max(epsilon, yh);  % Clip to avoid log(0)
-                    % loss = -(mean(sum(y .* log(yh), 2)));
-                    loss = - (1/size(y,1)) * sum(y .* log(yh));
+                    y = y./sum(y);
+                    yh = yh./sum(yh);
+                    loss = -sum(y .* log(yh + eps)) / numel(y);
                 otherwise
                     error("Invalid 'ProblemType'.")
             end
@@ -855,7 +862,7 @@ classdef MSOFNNplus
         %% ---------------------- Metrics -------------------------
         function metrics = GetMetric(o,yh,y,get_all)
             if nargin < 4, get_all = ""; end
-            if o.regression
+            if o.regression_flag
                 if strcmpi(get_all,"all")
                     % Mean Squared Error (MSE)
                     metrics.MSE = mse(yh,y);
@@ -890,7 +897,7 @@ classdef MSOFNNplus
                     metrics = mse(yh,y);
                 end
 
-            elseif o.classification
+            elseif o.classification_flag
                 cm = confusionmat(y, yh);
                 nClass = size(cm,1);
                 [TP,FP,FN,TN] = deal(zeros(1,nClass));
@@ -910,6 +917,7 @@ classdef MSOFNNplus
                     % F1 Score; [0,1]
                     metrics.F1SCORE = 2 * (metrics.PREC .* metrics.RECALL) / (metrics.PREC + metrics.RECALL);
                     % Cohen's Kappa
+                    agree = 
                     metrics.KAPPA = mean(2*(TN.*TP - FN.*FP)./(TP+FP).*(TN+FP)+(TP+FN).*(TN+FN));
                     % Matthews Correlation Coefficient (MCC);  [−1,1]
                     metrics.MCC = mean((TN.*TP - FN.*FP)./sqrt((TP+FP).*(TP+FN).*(TN+FP).*(TN+FN)));
@@ -964,56 +972,88 @@ classdef MSOFNNplus
                 o.Layer{l}.X = (zeros(o.Layer{l}.M + 1, o.MiniBatchSize)); %inf
             end
             o.n_rulePerLayer = zeros(1, o.n_Layer);
-            o.lambda_MB = cell(1,o.n_Layer);
+            % o.lambda_MB = cell(1,o.n_Layer);
         end
 
         %% ------------------------------ PLOT -----------------------------
-        function GetPlot(o,opts,uptr,downtr,upval,downval,xval)
-            if endsWith(lower(o.ProblemType),'regression') % regression
+        function GetPlot(o,uptr,downtr,upval,downval,xval,labels)
                 subplot(2,2,[1 2])
-                plot(1:numel(uptr), uptr, 'DisplayName', 'Training RMSE','LineWidth',1.5);
-                ylabel('RMSE'); title('Training Process'); legend('show'); grid on
-                if (opts.validationSplitPercent)
+                plot(1:numel(uptr), uptr, 'DisplayName', "Training "+labels(1),'LineWidth',1.5);
+                xlabel('Epoch'); ylabel(labels(1)); title('Training Process'); grid on
+                if o.classification_flag
+                    ylim([min([uptr,upval]),105])
+                    legend('show','Location','southeast')
+                else
+                    ylim([min([uptr,upval]),max([uptr,upval])])
+                end
+                if o.validation_flag
                     hold on;
                     % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-                    line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation RMSE');
+                    line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(1));
                     hold off;
                 end
 
                 subplot(2,2,[3 4])
-                plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
-                xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
-                if (opts.validationSplitPercent)
+                plot(1:numel(downtr), downtr, 'DisplayName', "Training "+labels(2),'LineWidth',1.5);
+                xlabel('Epoch'); ylabel(labels(2)); legend('show'); grid on
+                ylim([min([downtr,downval]),max([downtr,downval])])
+                if o.validation_flag
                     hold on
                     % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-                    line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
+                    line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', "Validation "+labels(2));
                     hold off
                 end
                 drawnow;
-            else % classification
-                subplot(2,2,[1 2])
-                plot(1:numel(uptr), uptr*100, 'DisplayName', 'Training Accuracy','LineWidth',1.5);
-                ylabel('Accuracy'); title('Training Process'); legend('show','Location','southeast'); grid on
-                ylim([min(uptr*100),105])
-                if (opts.validationSplitPercent)
-                    hold on;
-                    % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
-                    line(xval, upval*100, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Accuracy');
-                    hold off;
-                end
 
-                subplot(2,2,[3 4])
-                plot(1:numel(uptr), downtr*100, 'DisplayName', 'Training Loss','LineWidth',1.5);
-                xlabel('Epoch'); ylabel('Loss'); legend('show','Location','northeast'); grid on
-                ylim([min(downtr*100),max(downtr*100)])
-                if (opts.validationSplitPercent)
-                    hold on
-                    % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
-                    line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
-                    hold off
-                end
-                drawnow;
-            end
+
+
+
+
+            % if endsWith(lower(o.ProblemType),'regression') % regression
+            %     subplot(2,2,[1 2])
+            %     plot(1:numel(uptr), uptr, 'DisplayName', 'Training RMSE','LineWidth',1.5);
+            %     ylabel('RMSE'); title('Training Process'); legend('show'); grid on
+            %     if o.validation_flag
+            %         hold on;
+            %         % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
+            %         line(xval, upval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation RMSE');
+            %         hold off;
+            %     end
+            % 
+            %     subplot(2,2,[3 4])
+            %     plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
+            %     xlabel('Epoch'); ylabel('Loss'); legend('show'); grid on
+            %     if o.validation_flag
+            %         hold on
+            %         % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
+            %         line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
+            %         hold off
+            %     end
+            %     drawnow;
+            % else % classification
+            %     subplot(2,2,[1 2])
+            %     plot(1:numel(uptr), uptr*100, 'DisplayName', 'Training Accuracy','LineWidth',1.5);
+            %     ylabel('Accuracy'); title('Training Process'); legend('show','Location','southeast'); grid on
+            %     ylim([min(uptr*100),105])
+            %     if o.validation_flag
+            %         hold on;
+            %         % plot(1:numel(uptr), upval, 'DisplayName', 'Validation RMSE','LineStyle','--','Color','k');
+            %         line(xval, upval*100, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Accuracy');
+            %         hold off;
+            %     end
+            % 
+            %     subplot(2,2,[3 4])
+            %     plot(1:numel(uptr), downtr, 'DisplayName', 'Training Loss','LineWidth',1.5);
+            %     xlabel('Epoch'); ylabel('Loss'); legend('show','Location','northeast'); grid on
+            %     ylim([min(downtr),max(downtr)])
+            %     if o.validation_flag
+            %         hold on
+            %         % plot(1:numel(uptr), downval, 'DisplayName', 'Validation Loss','LineStyle','--','Color','k');
+            %         line(xval, downval, 'LineStyle', '--', 'Color', 'k', 'Marker', 'o', 'MarkerFaceColor', 'k','DisplayName', 'Validation Loss');
+            %         hold off
+            %     end
+            %     drawnow;
+            % end
 
         end
 
