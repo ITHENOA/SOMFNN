@@ -1,7 +1,45 @@
 clear
 clc
-%%
-data = readmatrix("SP500.xlsx");
+%% Pen (10 class)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+data = readmatrix("pen_class10.xlsx");
+X = data(:,1:end-1);
+Y = data(:,end);
+idx = randperm(numel(Y));
+Xtr = X(idx(1:6000),:);
+Ytr = Y(idx(1:6000),1);
+Xte = X(idx(6001:end),:);
+Yte = Y(idx(6001:end),1);
+clear X Y idx GestrurePhase
+%% GesPhase (5 class)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+load("GesturePhase_class5.mat")
+X = GestrurePhase(:,1:end-1);
+Y = GestrurePhase(:,end);
+idx = randperm(numel(Y));
+Xtr = X(idx(1:6000),:);
+Ytr = Y(idx(1:6000),1);
+Xte = X(idx(6001:end),:);
+Yte = Y(idx(6001:end),1);
+clear X Y idx GestrurePhase
+%% SP500 (1 reg)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+data = readmatrix("SP500_reg.xlsx");
+data = data(:,5);
+data = [data ; flipud(data)];
+data = normalize(data,1,"range");
+for t = 5:numel(data)-1
+    X(t,:) = [data(t-4) data(t-3) data(t-2) data(t-1) data(t)];
+    Y(t,1) = data(t+1);
+end
+Xtr = X(1:15038,:);
+Ytr = Y(1:15038,1);
+Xte = X(15039:end,:);
+Yte = Y(15039:end,1);
+clear data X Y
 %% liver (Binery classification)
 clear;clc;close all
 data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\liver_disorders.xlsx"));
@@ -73,13 +111,13 @@ data = table2array(readtable("C:\Users\hojja\Desktop\MSOFNN\dataset\SP500.csv"))
 %% construct neuro-fuzzy network
 clc,close all
 % rng(1)
-net = MSOFNNplus(Xtr,Ytr,2,...
+net = MSOFNNplus(Xtr,Ytr,3,...
     "n_hiddenNodes","Auto",...
     "ActivationFunction", ["sigmoid","linear"],...
     "DensityThreshold", exp(-5),...
-    "MaxEpoch", 5,...
+    "MaxEpoch", 200,...
     "BatchNormType", "none",...
-    "LearningRate", 0.01,...
+    "LearningRate", 0.001,...
     "SolverName", "adam",...
     "WeightInitializationType", "none",...
     "DataNormalize" , "X",...
@@ -91,35 +129,36 @@ net = MSOFNNplus(Xtr,Ytr,2,...
     "adampar_v0", 0,...
     "Plot", 0,...
     "Verbose", 5)
+
 excelFileName = 'results.xlsx';
 %% %%%%%%%%%%%%%%%%%
-datasetName = "kmg";
-n_run = 5;
+clc
+datasetName = "liver";
+n_run = 10;
 %%%%%%%%%%%%
 for str = ["m_b","m_p","m_mus","m_mis","m_n"]
-    if contains(net.ProblemType,"Regression")
-        eval(str+"_LOSS = zeros("+n_run+",1);")
-        eval(str+"_MSE = zeros("+n_run+",1);")
-        eval(str+"_RMSE = zeros("+n_run+",1);")
-        eval(str+"_MAE = zeros("+n_run+",1);")
-        eval(str+"_NDEI = zeros("+n_run+",1);")
-        eval(str+"_NDEI2 = zeros("+n_run+",1);")
-    else
-        eval(str+"_ACC = zeros("+n_run+",1);")
-        eval(str+"_PREC = zeros("+n_run+",1);")
-        eval(str+"_RECALL = zeros("+n_run+",1);")
-        eval(str+"_F1SCORE = zeros("+n_run+",1);")
-        eval(str+"_KAPPA = zeros("+n_run+",1);")
-        eval(str+"_MCC = zeros("+n_run+",1);")
-    end
+    eval(str+"_LOSS = zeros("+n_run+",1);")
+    eval(str+"_MSE = zeros("+n_run+",1);")
+    eval(str+"_RMSE = zeros("+n_run+",1);")
+    eval(str+"_MAE = zeros("+n_run+",1);")
+    eval(str+"_NDEI = zeros("+n_run+",1);")
+    eval(str+"_NDEI2 = zeros("+n_run+",1);")
+    eval(str+"_ACC = zeros("+n_run+",1);")
+    eval(str+"_PREC = zeros("+n_run+",1);")
+    eval(str+"_RECALL = zeros("+n_run+",1);")
+    eval(str+"_F1SCORE = zeros("+n_run+",1);")
+    eval(str+"_KAPPA = zeros("+n_run+",1);")
+    eval(str+"_MCC = zeros("+n_run+",1);")
 end
-[texe,layers,rules,,,,= deal(zeros(n_run,1));
+[texe,layers,rules,rem_rule_p,rem_rule_mus,rem_rule_mis,rem_rule_n]= deal(zeros(n_run,1));
 for i = 1:n_run
     tic
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     [trained_net,valdata] = net.Train(...
         "validationSplitPercent",0.2,...
-        "valPerEpochFrequency",5,...
+        "valPerEpochFrequency",1,...
         "ApplyRuleRemover",0);
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     texe(i) = toc;
     [~,metricsLast] = Test(trained_net.last, Xte, Yte);
     [~,metricsBest] = Test(trained_net.best, Xte, Yte);
@@ -136,23 +175,27 @@ for i = 1:n_run
             TRDnet = trained_net.last;
         end
     end
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     net_removedRule = RuleRemover(TRDnet,valdata.x,0.5,0.5,...
         "OptimizeParams",0,...
         "OutputData_required",[],...
         "DisplayIterations","iter",...
         "PSO_MaxIterations",20,...
         "PSO_MaxStallIterations",7);
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     layers(i) = TRDnet.n_Layer;
     rules(i) = mean(TRDnet.n_rulePerLayer);
     rem_rule_p(i) =  mean(net_removedRule.Percentage.n_rulePerLayer);
     rem_rule_mus(i) =  mean(net_removedRule.MeanMultiStd.n_rulePerLayer);
     rem_rule_mis(i) =  mean(net_removedRule.MeanMinesStd.n_rulePerLayer);
     rem_rule_n(i) =  mean(net_removedRule.new.n_rulePerLayer);
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     [~,m_b] = Test(TRDnet, Xte, Yte, "Plot",0,"MetricReport","all");
     [~,m_p] = Test(net_removedRule.Percentage, Xte, Yte, "Plot",0,"MetricReport","all");
     [~,m_mus] = Test(net_removedRule.MeanMultiStd, Xte, Yte, "Plot",0,"MetricReport","all");
     [~,m_mis] = Test(net_removedRule.MeanMinesStd, Xte, Yte, "Plot",0,"MetricReport","all");
     [~,m_n] = Test(net_removedRule.new, Xte, Yte, "Plot",0,"MetricReport","all");
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     for str = ["m_b","m_p","m_mus","m_mis","m_n"]
         if contains(net.ProblemType,"Regression")
             eval(str+"_LOSS(i) = "+str+".LOSS;")
@@ -172,7 +215,7 @@ for i = 1:n_run
     end
 end
 % save to exel
-run = 1:i;
+run = (1:n_run)';
 if contains(net.ProblemType,"Regression")
     tbl = table(run,texe,layers, ...
         rules,m_b_LOSS,m_b_MSE,m_b_RMSE,m_b_MAE,m_b_NDEI,m_b_NDEI2, ...

@@ -1,7 +1,48 @@
 clear
 clc
-%%
-data = readmatrix("SP500.xlsx");
+%% Pen (10 class)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+data = readmatrix("pen_class10.xlsx");
+X = data(:,1:end-1);
+Y = data(:,end);
+idx = randperm(numel(Y));
+Xtr = X(idx(1:7494),:);
+Ytr = Y(idx(1:7494),1);
+Xte = X(idx(7495:end),:);
+Yte = Y(idx(7495:end),1);
+clear X Y idx data
+datasetName = "Pen";
+%% GesPhase (5 class)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+load("GesturePhase_class5.mat")
+X = GestrurePhase(:,1:end-1);
+Y = GestrurePhase(:,end);
+idx = randperm(numel(Y));
+Xtr = X(idx(1:6500),:);
+Ytr = Y(idx(1:6500),1);
+Xte = X(idx(6501:end),:);
+Yte = Y(idx(6501:end),1);
+clear X Y idx GestrurePhase
+datasetName = "GesPhase";
+%% SP500 (1 reg)
+clear;clc;close all
+addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset")
+data = readmatrix("SP500_reg.xlsx");
+data = data(:,5);
+data = [data ; flipud(data)];
+data = normalize(data,1,"range");
+for t = 5:numel(data)-1
+    X(t,:) = [data(t-4) data(t-3) data(t-2) data(t-1) data(t)];
+    Y(t,1) = data(t+1);
+end
+Xtr = X(1:15038,:);
+Ytr = Y(1:15038,1);
+Xte = X(15039:end,:);
+Yte = Y(15039:end,1);
+clear data X Y
+datasetName = "SP500";
 %% liver (Binery classification)
 clear;clc;close all
 data = table2array(readtable("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\liver_disorders.xlsx"));
@@ -15,6 +56,7 @@ Ytr = Y(idxTr);
 Xte = X(idxTe,:);
 Yte = Y(idxTe);
 clear data X Y idx idxTr idxTe
+datasetName = "liver";
 %% KMG (3 class)
 clear;clc;close all
 addpath("C:\Users\ITHENOA_PC\Desktop\MSOFNN\dataset\KMG")
@@ -29,6 +71,7 @@ Ytr = fieldAmp(idx(1:10000),end);
 Xte = fieldAmp(idx(10001:end),1:end-1);
 Yte = fieldAmp(idx(10001:end),end);
 clear fieldAmp fieldAmp_t idx
+datasetName = "KMG";
 %% Mackey Glass (1 reg)
 clear;clc;close all
 load MackeyGlassNew.mat
@@ -42,6 +85,7 @@ for t = 5001:5500
     Yte(t-5000,:) = data(t + 85);
 end
 clear data t
+datasetName = "M.Glass";
 %% Mackey Glass (easy)
 clear;clc;close all
 load mackey_0.1.mat
@@ -67,19 +111,18 @@ Xte = data(idx(197:end),1:7);
 Ytr = data(idx(1:196),8);
 Yte = data(idx(197:end),8);
 clear data idx
-%% SP500
-clear;clc;close all
-data = table2array(readtable("C:\Users\hojja\Desktop\MSOFNN\dataset\SP500.csv"))
+datasetName = "A.MPG";
+
 %% construct neuro-fuzzy network
 clc,close all
 % rng(1)
-net = MSOFNNplus(Xtr,Ytr,2,...
+net = MSOFNNplus(Xtr,Ytr,3,...
     "n_hiddenNodes","Auto",...
     "ActivationFunction", ["sigmoid","linear"],...
     "DensityThreshold", exp(-5),...
-    "MaxEpoch", 5,...
+    "MaxEpoch", 200,...
     "BatchNormType", "none",...
-    "LearningRate", 0.01,...
+    "LearningRate", 0.001,...
     "SolverName", "adam",...
     "WeightInitializationType", "none",...
     "DataNormalize" , "X",...
@@ -91,10 +134,10 @@ net = MSOFNNplus(Xtr,Ytr,2,...
     "adampar_v0", 0,...
     "Plot", 0,...
     "Verbose", 5)
+
 excelFileName = 'results.xlsx';
 %% %%%%%%%%%%%%%%%%%
 clc
-datasetName = "kmg";
 n_run = 10;
 %%%%%%%%%%%%
 for str = ["m_b","m_p","m_mus","m_mis","m_n"]
