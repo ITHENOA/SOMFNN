@@ -19,9 +19,10 @@ switch lower(datasetName)
 
     case "gesphase"
         % GesPhase (5 class)
-        load GesturePhase_class5.mat data
-        X = data(:,1:end-1);
-        Y = data(:,end);
+        load GesturePhase_class5.mat GestrurePhase
+        GestrurePhase(logical(sum(isnan(GestrurePhase),2)),:) = [];
+        X = GestrurePhase(:,1:end-1);
+        Y = GestrurePhase(:,end);
         idx = randperm(numel(Y));
         dataTr.x = X(idx(1:6500),:);
         dataTr.y = Y(idx(1:6500),1);

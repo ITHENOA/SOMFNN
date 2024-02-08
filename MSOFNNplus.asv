@@ -23,6 +23,7 @@ classdef MSOFNNplus
         Verbose
         Plot
         ProblemType
+        lamReg = 2
     end
     properties (Access=private)
         Xtrain
@@ -41,9 +42,8 @@ classdef MSOFNNplus
         validation_flag = 0         % 1:using validation
         minY
         maxY
-        minClassLabel
+        uniqLabels
         MultiClassMode
-        onehotState = 0;
     end
     methods
         function o = MSOFNNplus(Xtr, Ytr, n_Layer, opts)
@@ -71,6 +71,8 @@ classdef MSOFNNplus
                 opts.MultiClassMode %[round,softmax]
             end
 
+            [Xtr, Ytr] = o.checkData(Xtr, Ytr);
+
             % Save to object
             o.LearningRate = opts.LearningRate; % learning rate for each layer
             o.MaxEpoch = opts.MaxEpoch;
@@ -93,20 +95,20 @@ classdef MSOFNNplus
             uniqOutputs = unique(Ytr);
             if all(mod(Ytr, 1) == 0) % Classification
                 n_class = numel(uniqOutputs);
-                o.minClassLabel = min(uniqOutputs);
+                o.uniqLabels = uniqOutputs;
                 if n_class == 2 %all(ismember(uniqOutputs, [0, 1]))
                     disp('Problem Type: Binary Classification');
                     o.ProblemType = "Binary-Classification";
                     o.classification_flag = 1;
+                    if ismember(2,uniqOutputs), error("class labels should be [0,1]."), end
                 elseif n_class > 2
                     disp('Problem Type: Multiclass Classification');
                     o.ProblemType = "Multiclass-Classification";
                     o.classification_flag = 2;
-
+                    
                     if o.MultiClassMode == "softmax"
+                        if min(uniqOutputs) == 0, Ytr = Ytr + 1; end % label classes 1,2,...
                         n_node_end = n_class;
-                        % Ytr = o.EncodeOneHot(Ytr);
-                        % o.onehotState = 1;
                     end
                 end
             else % Regression
@@ -338,10 +340,8 @@ classdef MSOFNNplus
             end
 
             % save network
-            o.onehotState = 0;
             if o.validation_flag && epoch>1
                 trained_net.last = o;
-                netBest.onehotState = 0;
                 trained_net.best = netBest;
                 valData.x = Xval;
                 valData.y = Yval;
@@ -373,6 +373,7 @@ classdef MSOFNNplus
                 opts.MetricReport {mustBeTextScalar} = "none" % ["none", "all"]
                 opts.Plot {logical} = 0
             end
+            [Xtest,Ytest] = net.checkData(Xtest,Ytest);
             metrics = [];
             lambda = cell(1,net.n_Layer);
 
@@ -394,6 +395,11 @@ classdef MSOFNNplus
             end
             % un normalize if needed
             yhat = net.UnNormalizeOutput(x');
+
+            % check labels
+            if net.classification_flag == 2 && net.MultiClassMode == "softmax" && min(net.uniqLabels) == 0
+                Ytest = Ytest + 1; 
+            end
 
             % determin loss (required Ytest)
             if Yexist, Loss = net.GetLoss(yhat,Ytest); end
@@ -655,17 +661,21 @@ classdef MSOFNNplus
         % update A matrix of each layer
         function o = Backward(o,yh,y,BP_pars,it)
             %   INPUT
-            % yh : (nDim,M)
+            % yh : (nDim,MB)
             % y : (nDim,MB)
-            %   OUTPUT
+            % BP_pars : backpropagation params calculated in forward path
+            % it : number of passes iterations
 
             if o.classification_flag == 2 && o.MultiClassMode == "softmax"
-                y = o.EncodeOneHot(y);
+                y = o.EncodeOneHot(y')';
                 yh = softmax(yh);
             end
 
             DeDy = yh - y;  % (wl,MB)
 
+            % o.lamReg = o.lamReg - o.LearningRate * sum(o.Layer{end}.A,"all")^2;
+            % DeDy = (yh - y) + o.lamReg * sum(o.Layer{end}.A,"all")^2;
+            
             d = cell(1,o.n_Layer);
             d{o.n_Layer} =  reshape(DeDy, o.Layer{end}.W, 1, 1, []); % (W,MB) -> (W,1,1,MB)
 
@@ -714,7 +724,11 @@ classdef MSOFNNplus
                 end
 
                 % update A
-                o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
+                % o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * DeDA;
+                frobenius_norm_A = sum(o.Layer{l}.A.^2,"all");
+                o.lamReg(l) = o.lamReg(l) - o.LearningRate * frobenius_norm_A^2;
+                % o.Layer{l}.A = o.Layer{l}.A - o.LearningRate * (DeDA + o.lamReg * o.Layer{l}.A);
+                o.Layer{l}.A = (1-o.LearningRate*o.lamReg(l)) * o.Layer{l}.A - o.LearningRate * DeDA;
 
                 if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
                     warning
@@ -867,6 +881,9 @@ classdef MSOFNNplus
 
         %% ---------------------------- Loss  -----------------------------
         function loss = GetLoss(o,yh,y)
+            %   INPUT
+            % yh : (nData,nDim)
+            % y : (nData,nDim)
 
             if o.regression_flag % Mean of Squared Error
                 loss = mse(yh,y);
@@ -939,9 +956,9 @@ classdef MSOFNNplus
                     % Accuracy; [0,1]
                     metrics.ACC = sum(TP) / sum(cm,"all");
                     % Precision; [0,1]
-                    metrics.PREC = sum(TP) / (sum(TP) + sum(FP)); % macro = mean(TP ./ (TP + FP));
+                    metrics.PREC = mean(TP ./ (TP + FP));
                     % Recall; [0,1]
-                    metrics.RECALL = sum(TP) / (sum(TP) + sum(FN)); % macro = mean(TP ./ (TP + FN));
+                    metrics.RECALL = mean(TP ./ (TP + FN));
                     % F1 Score; [0,1]
                     metrics.F1SCORE = 2 * (metrics.PREC .* metrics.RECALL) / (metrics.PREC + metrics.RECALL);
                     % Cohen's Kappa
@@ -971,11 +988,6 @@ classdef MSOFNNplus
                 
                 if o.MultiClassMode == "softmax"
                     [~,yh] = max(softmax(yh'));
-                    if o.minClassLabel == 0
-                        yh = yh - 1;
-                    elseif o.minClassLabel > 1
-                        yh = yh + o.minClassLabel - 1;
-                    end
                     yh = yh';
                 else
                     yh = round(yh);
@@ -1016,7 +1028,8 @@ classdef MSOFNNplus
             plot(1:numel(uptr), uptr, 'DisplayName', "Training "+labels(1),'LineWidth',1.5);
             xlabel('Epoch'); ylabel(labels(1)); title('Training Process'); grid on
             if o.classification_flag
-                ylim([min([uptr,upval]),105])
+                % ylim([min([uptr,upval]),105])
+                ylim([0,105])
                 legend('show','Location','southeast')
             else
                 ylim([min([uptr,upval]),max([uptr,upval])])
@@ -1042,13 +1055,13 @@ classdef MSOFNNplus
         end
 
         %% ------------------------- one-hot-vector -----------------------
-        function y_onehot = EncodeOneHot(~,y)
+        function y_onehot = EncodeOneHot(o,y)
             %   INPUT
-            % y : (#data,1)
+            % y : (nData,1)
             %   OUTPUT
-            % y_onehot : (#data,nClass)
+            % y_onehot : (nData,nClass)
 
-            uniqs = unique(y);
+            uniqs = o.uniqLabels;
             nClass = numel(uniqs);
             y_onehot = zeros(size(y,1),nClass);
             for i = 1:nClass
@@ -1056,19 +1069,27 @@ classdef MSOFNNplus
             end
         end
 
-        function y = DecodeOneHot(o,y_onehot)
-            nClass = size(y_onehot,2);
-            y = zeros(size(y_onehot,1),1);
-            classLabels = 1:nClass;
-            if o.minClassLabel == 0
-                classLabels = classLabels - 1;
-            elseif o.minClassLabel > 1
-                classLabels = classLabels + o.minClassLabel - 1;
-            end
-            for i = 1:nClass
-                y(logical(y_onehot(:,i))) = classLabels(i);
+        % function y = DecodeOneHot(o,y_onehot)
+        %     nClass = size(y_onehot,2);
+        %     y = zeros(size(y_onehot,1),1);
+        %     classLabels = 1:nClass;
+        %     if o.minClassLabel == 0
+        %         classLabels = classLabels - 1;
+        %     elseif o.minClassLabel > 1
+        %         classLabels = classLabels + o.minClassLabel - 1;
+        %     end
+        %     for i = 1:nClass
+        %         y(logical(y_onehot(:,i))) = classLabels(i);
+        %     end
+        % end
+
+        function [x,y] = checkData(~,x,y)
+            nanIdxs = logical(sum([sum(isnan(x),2),sum(isnan(y),2)],2));
+            x(nanIdxs,:) = [];
+            y(nanIdxs,:) = [];
+            if sum(nanIdxs)
+                warning("remove "+num2str(sum(nanIdxs))+" NAN row of data")
             end
         end
-
     end
 end
