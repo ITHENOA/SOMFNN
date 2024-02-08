@@ -23,7 +23,7 @@ classdef MSOFNNplus
         Verbose
         Plot
         ProblemType
-        % lamReg = 2
+        lamReg = 0
     end
     properties (Access=private)
         Xtrain
@@ -1063,6 +1063,7 @@ classdef MSOFNNplus
             % y_onehot : (nData,nClass)
 
             uniqs = o.uniqLabels;
+            if min(uniqs) == 0, uniqs=uniqs+1; end
             nClass = numel(uniqs);
             y_onehot = zeros(size(y,1),nClass);
             for i = 1:nClass

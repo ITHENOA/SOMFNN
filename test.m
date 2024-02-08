@@ -5,7 +5,7 @@ excelFileName = 'results.xlsx';
 datasetDirectory = "./dataset";
 n_run = 10;
 % for datasetName = ["sp500", "mglass", "ampg"] % regression
-for datasetName = ["gesphase"] % classification
+for datasetName = ["kmg"] % classification
 % %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
     [TR,TE] = datasetBenchmark(datasetName,datasetDirectory);
@@ -14,7 +14,7 @@ for datasetName = ["gesphase"] % classification
     clc,close all
     % rng(1)
     net = MSOFNNplus(TR.x,TR.y,2,...
-        "n_hiddenNodes",5,...
+        "n_hiddenNodes","auto",...
         "ActivationFunction", ["sig","lin"],...
         "DensityThreshold", exp(-3),...
         "MaxEpoch", 200,...
@@ -32,7 +32,7 @@ for datasetName = ["gesphase"] % classification
         "Plot", 1,...
         "Verbose", 10, ...
         "MultiClassMode","softmax")
-    % net.lamReg = 10;
+    % net.lamReg = 0.01;
 
     %%
     for str = ["m_b","m_p","m_mus","m_mis","m_n"]
