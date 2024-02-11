@@ -1,0 +1,6 @@
+@software{SOMFNN_MATLAB_Toolbox,
+  author = {Hosseni, Hojjat and Abasian, Arman},
+  title = {{SOMFNN}},
+  url = {https://github.com/ITHENOA/SOMFNN.git},
+  year = {2024}
+}
