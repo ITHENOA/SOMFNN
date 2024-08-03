@@ -3,8 +3,8 @@ clc
 %% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 excelFileName = 'results2.xlsx';
 datasetDirectory = "./dataset";
-[TR,TE] = datasetBenchmark("liver",datasetDirectory);
-n_run = 10;
+[TR,TE] = datasetBenchmark("gesphase",datasetDirectory);
+n_run = 5;
 % for datasetName = ["sp500", "mglass", "ampg"] % regression
 % for datasetName = ["pen", "gesphase", "liver", "kmg"] % classification
 
@@ -19,7 +19,7 @@ for j = 1:1%numel(datasetName)
     clc,close all
     % rng(42)
     net = SOMFNN(TR.x,TR.y,2,...
-        "n_hiddenNodes","auto",... [vector,"auto"]
+        "n_hiddenNodes",18,... [vector,"auto"]
         "ActivationFunction", ["sig"],... [rel,leaky,sig,tan,lin,elu]
         "KernelsName",["RBF"],... ["RBF","COS","Linear","Polynomial","Laplacian","Chi2"]
         "KernelsWeight",[1], ... sum = 1
@@ -27,12 +27,12 @@ for j = 1:1%numel(datasetName)
         "MaxEpoch", 200,...
         "LearningRateSchedule","none",... ["none",[epoch,LR,...,epoch,LR]]
         "BatchNormType", "none",... temp
-        "LearningRate", 1,...
+        "LearningRate", 0.01,...
         "SolverName", "adam",... [mini,sgd,adam,batchgd,batchadam]
         "WeightInitializationType", "mean",... [mean,rand,xavier]
         "DataNormalize" , "X",...
         "NormalizeDimension","eachFeature",... ["eachFeature","dataFeatures"]
-        "MiniBatchSize", 201,...
+        "MiniBatchSize", 128,...
         "adampar_beta1", .6,...
         "adampar_beta2", .8,...
         "adampar_epsilon", 1e-8,...
@@ -41,11 +41,13 @@ for j = 1:1%numel(datasetName)
         "Plot", 1,... [0,1]
         "Verbose", 10, ... [0:MaxEpoch)
         "RegularizationTerm",0, ...[0:inf)
-        "updatePrototype",0 ...[0,1]
+        "updatePrototype",0, ...[0,1]
+        "dropRuleRegularization",0, ... [0,1]
+        "dropRuleRate",0 ... [0:1)
         )
 
     %%
-    for str = ["m_b","m_p","m_mus","m_mis","m_n"]
+    for str = ["m_b","m_p","m_mus","m_mis","m_n","m_prun2"]
         eval(str+"_LOSS = zeros("+n_run+",1);")
         eval(str+"_MSE = zeros("+n_run+",1);")
         eval(str+"_RMSE = zeros("+n_run+",1);")
@@ -60,7 +62,7 @@ for j = 1:1%numel(datasetName)
         eval(str+"_KAPPA = zeros("+n_run+",1);")
         eval(str+"_MCC = zeros("+n_run+",1);")
     end
-    [texe,layers,rules,rem_rule_p,rem_rule_mus,rem_rule_mis,rem_rule_n]= deal(zeros(n_run,1));
+    [texe,layers,rules,rem_rule_p,rem_rule_mus,rem_rule_mis,rem_rule_n,rem_rule_prun2]= deal(zeros(n_run,1));
     %%
     for i = 1:n_run
         i
@@ -75,7 +77,7 @@ for j = 1:1%numel(datasetName)
             "ApplyRuleRemover",0, ... [0,1]
             "LiveOutPlot","none", ... ["none",dataTest,"useTrainData","useValData"]
             "LiveOutPlotFrequency",5, ...
-            "EarlyStoppingPatience",1000 ... [0:MaxEpoch)
+            "EarlyStoppingPatience",inf ... [0:MaxEpoch)
             );
         texe(i) = toc;
         [~,metricsLast] = Test(trained_net.last, TE.x, TE.y);
@@ -106,12 +108,13 @@ for j = 1:1%numel(datasetName)
         %     );
         % texe(i) = toc;
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        net_removedRule = RuleRemover(TRDnet,valdata.x,0.5,0.5,...
+        net_removedRule = RulePruning(TRDnet,valdata.x,0.5,0.5,...
             "OptimizeParams",0,...
             "OutputData_required",valdata.y,...
             "DisplayIterations","iter",...
             "PSO_MaxIterations",1000,...
             "PSO_MaxStallIterations",100);
+        net_removedRule2 = RulePruning2(TRDnet,valdata.x,valdata.y);
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         layers(i) = TRDnet.n_Layer;
         rules(i) = mean(TRDnet.n_rulePerLayer);
@@ -119,14 +122,16 @@ for j = 1:1%numel(datasetName)
         rem_rule_mus(i) =  mean(net_removedRule.MeanMultiStd.n_rulePerLayer);
         rem_rule_mis(i) =  mean(net_removedRule.MeanMinesStd.n_rulePerLayer);
         rem_rule_n(i) =  mean(net_removedRule.new.n_rulePerLayer);
+        rem_rule_prun2(i) =  mean(net_removedRule.new.n_rulePerLayer);
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         [~,m_b] = Test(TRDnet, TE.x, TE.y, "Plot",0,"MetricReport","all");
         [~,m_p] = Test(net_removedRule.Percentage, TE.x, TE.y, "Plot",0,"MetricReport","all");
         [~,m_mus] = Test(net_removedRule.MeanMultiStd, TE.x, TE.y, "Plot",0,"MetricReport","all");
         [~,m_mis] = Test(net_removedRule.MeanMinesStd, TE.x, TE.y, "Plot",0,"MetricReport","all");
         [~,m_n] = Test(net_removedRule.new, TE.x, TE.y, "Plot",0,"MetricReport","all");
+        [~,m_prun2] = Test(net_removedRule2, TE.x, TE.y, "Plot",0,"MetricReport","all");
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        for str = ["m_b","m_p","m_mus","m_mis","m_n"]
+        for str = ["m_b","m_p","m_mus","m_mis","m_n","m_prun2"]
             if contains(net.ProblemType,"Regression")
                 eval(str+"_LOSS(i) = "+str+".LOSS;")
                 eval(str+"_MSE(i) = "+str+".MSE;")
@@ -153,14 +158,16 @@ for j = 1:1%numel(datasetName)
             rem_rule_p,m_p_LOSS,m_p_MSE,m_p_RMSE,m_p_MAE,m_p_NDEI,m_p_NDEI2, ...
             rem_rule_mus,m_mus_LOSS,m_mus_MSE,m_mus_RMSE,m_mus_MAE,m_mus_NDEI,m_mus_NDEI2, ...
             rem_rule_mis,m_mis_LOSS,m_mis_MSE,m_mis_RMSE,m_mis_MAE,m_mis_NDEI,m_mis_NDEI2, ...
-            rem_rule_n,m_n_LOSS,m_n_MSE,m_n_RMSE,m_n_MAE,m_n_NDEI,m_n_NDEI2);
+            rem_rule_n,m_n_LOSS,m_n_MSE,m_n_RMSE,m_n_MAE,m_n_NDEI,m_n_NDEI2,...
+            rem_rule_prun2,m_prun2_LOSS,m_prun2_MSE,m_prun2_RMSE,m_prun2_MAE,m_prun2_NDEI,m_prun2_NDEI2);
     else
         tbl = table(run,texe,layers, ...
             rules,m_b_ACC,m_b_BACC,m_b_PREC,m_b_RECALL,m_b_F1SCORE,m_b_KAPPA,m_b_MCC, ...
             rem_rule_p,m_p_ACC,m_p_BACC,m_p_PREC,m_p_RECALL,m_p_F1SCORE,m_p_KAPPA,m_p_MCC, ...
             rem_rule_mus,m_mus_ACC,m_mus_BACC,m_mus_PREC,m_mus_RECALL,m_mus_F1SCORE,m_mus_KAPPA,m_mus_MCC, ...
             rem_rule_mis,m_mis_ACC,m_mis_BACC,m_mis_PREC,m_mis_RECALL,m_mis_F1SCORE,m_mis_KAPPA,m_mis_MCC, ...
-            rem_rule_n,m_n_ACC,m_n_BACC,m_n_PREC,m_n_RECALL,m_n_F1SCORE,m_n_KAPPA,m_n_MCC);
+            rem_rule_n,m_n_ACC,m_n_BACC,m_n_PREC,m_n_RECALL,m_n_F1SCORE,m_n_KAPPA,m_n_MCC,...
+            rem_rule_prun2,m_prun2_ACC,m_prun2_BACC,m_prun2_PREC,m_prun2_RECALL,m_prun2_F1SCORE,m_prun2_KAPPA,m_prun2_MCC);
     end % num test
     writetable(tbl, excelFileName, 'Sheet', datasetName(j));
 end % dataset
