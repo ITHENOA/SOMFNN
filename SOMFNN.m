@@ -314,7 +314,7 @@ classdef SOMFNN
 
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
-
+                tic
                 if o.dropRuleRegularization && epoch > 1
                     o.dropRule_flag = 1;
                 end
@@ -372,7 +372,7 @@ classdef SOMFNN
                         if o.regression_flag
                             fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] \n", epoch, METRIC_tr(epoch), sqrt(METRIC_tr(epoch)))
                         else
-                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch))
+                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] [tep:%.2f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch), toc)
                         end
                     end
                 end

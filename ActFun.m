@@ -14,7 +14,7 @@ classdef ActFun
                 c = 0
             end
             y = a * x + c;
-            yp = a*ones(size(x));
+            yp = a*ones(size(x), class(y));
         end
 
         function [y,yp] = ReLU(x)

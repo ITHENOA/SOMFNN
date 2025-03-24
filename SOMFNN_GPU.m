@@ -31,6 +31,7 @@ classdef SOMFNN_GPU
         LearningRateSchedule
         dropRuleRegularization
         dropRuleRate
+        useGpu
     end
     properties (Access=private)
         NormalizeDimension
@@ -57,7 +58,7 @@ classdef SOMFNN_GPU
     end
     methods
         %% ----------------------- construct ------------------------------
-        function o = SOMFNN(Xtr, Ytr, n_Layer, opts)
+        function o = SOMFNN_GPU(Xtr, Ytr, n_Layer, opts)
             arguments
                 Xtr % (#data,#dim)                : Input data
                 Ytr % (#data,#dim)                : Output data
@@ -90,6 +91,7 @@ classdef SOMFNN_GPU
                 opts.useGpu = false
             end
 
+            o.useGpu = opts.useGpu;
             [Xtr, Ytr] = o.checkData(Xtr, Ytr);
 
             % Save to object
@@ -114,6 +116,7 @@ classdef SOMFNN_GPU
             o.ini_LR = o.LearningRate;
             o.dropRuleRegularization = opts.dropRuleRegularization;
             o.dropRuleRate = opts.dropRuleRate;
+            o.useGpu = opts.useGpu;
 
             % Validate String Variables
             o = o.StringValidate();
@@ -314,6 +317,7 @@ classdef SOMFNN_GPU
 
             %%%%%%%% epoch %%%%%%%%
             for epoch = 1:o.MaxEpoch
+                tic
 
                 if o.dropRuleRegularization && epoch > 1
                     o.dropRule_flag = 1;
@@ -329,7 +333,7 @@ classdef SOMFNN_GPU
                     o.LearningRate = o.LearningRateSchedule(find(epoch == o.LearningRateSchedule(1:2:end))*2);
                 end
 
-                yhat = zeros(o.nTrData,o.n_nodes(end));
+                yhat = (zeros(o.nTrData,o.n_nodes(end)));
                 shuffle_idx = randperm(size(Xtr,1));
                 %%%%%%%%%%% iteration %%%%%%%%%%%
                 for it_epoch = 1 : ceil(size(Xtr,1)/o.MiniBatchSize)
@@ -372,7 +376,7 @@ classdef SOMFNN_GPU
                         if o.regression_flag
                             fprintf("[Epoch:%d] [MSE:%.4f] [RMSE:%.4f] \n", epoch, METRIC_tr(epoch), sqrt(METRIC_tr(epoch)))
                         else
-                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch))
+                            fprintf("[Epoch:%d] [ACC:%.3f] [Loss:%.4f] [TimeExe:%.2f] \n", epoch, METRIC_tr(epoch), LOSS_tr(epoch), toc)
                         end
                     end
                 end
@@ -504,7 +508,7 @@ classdef SOMFNN_GPU
             % normalize data if needed
             Xtest = net.NormalizeData(Xtest);
 
-            x = Xtest';
+            x = net.setDev(Xtest');
             % Forward
             for l = 1:net.n_Layer
                 if isempty(opts.givenLambdas)
@@ -516,8 +520,8 @@ classdef SOMFNN_GPU
                 x = net.GetOutput(net.Layer{l}, x, lambda{l});
             end
             % un normalize if needed
+            x=gather(x);
             yhat = net.UnNormalizeOutput(x');
-            yhat=net.setDev(yhat);
 
             % check labels
             if net.classification_flag == 2 ...
@@ -561,6 +565,7 @@ classdef SOMFNN_GPU
             [yhat,o,BP_pars] = o.Forward(x);
             % backward >> update A matrix of each rule
             o = o.Backward(yhat,y,BP_pars,it);
+            % yhat=gather(yhat);
         end
 
         %% ------------------------ Rule Pruning ---------------------------
@@ -711,9 +716,9 @@ classdef SOMFNN_GPU
             end
 
             % Layer
-            BP_pars.lambda_4D = setDev(cell(1,o.n_Layer));
-            BP_pars.AfAx_4D = setDev(cell(1,o.n_Layer));
-            BP_pars.AfpAx_4D = setDev(cell(1,o.n_Layer));
+            BP_pars.lambda_4D = (cell(1,o.n_Layer));
+            BP_pars.AfAx_4D = (cell(1,o.n_Layer));
+            BP_pars.AfpAx_4D = (cell(1,o.n_Layer));
             for l = 1:numel(o.Layer)
                 % each data in mini_batch
                 MB = size(x,2);
@@ -731,10 +736,12 @@ classdef SOMFNN_GPU
                 M = o.Layer{l}.M;
                 W = o.Layer{l}.W;
 
-                [lambda_l,tau2_l,Dall] = o.GetLambda(x,o.Layer{l},n);
+                [lambda_l,~,~] = o.GetLambda(x,o.Layer{l},n);
                 if o.dropRule_flag
                     lambda_l(~o.prob_mat{l},:) = 0;
                 end
+                % lambda_l=o.setDev(lambda_l);
+                x=o.setDev(x);
                 % dens_5D = reshape(Dall,1,1,N,MB,numel(o.KernelsName)); %(N,MB,nKernel)
                 % BP_pars.tau2_4D{l} = reshape(tau2_l, 1,1,N,1); %(N,1)=>(1,1,N,MB=NoNeed)     %?
                 % BP_pars.dens_4D{l} = reshape(sum(Dall,3), 1,1,N,MB); %(N,MB)=>(1,1,N,MB)     %?
@@ -747,6 +754,8 @@ classdef SOMFNN_GPU
                 % calculate for backward process
                 BP_pars.AfAx_4D{l} = reshape(AfAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
                 BP_pars.AfpAx_4D{l} = reshape(AfpAx, W,1,N,MB); %(W*N,MB)=>(W,1,N,MB)
+
+                x=gather(x);
             end
             y = x;    % last output of layers
         end
@@ -859,7 +868,7 @@ classdef SOMFNN_GPU
             [yn,AF_prim] = ActFun.(o.ActivationFunction{l.NO})(l.A * X); % (Wl*Nl,Ml+1)*(Ml+1,MB)=(Wl*Nl,MB)
             lamn_yn = repelem(lambda,l.W,1) .* yn;
             y = reshape(sum(reshape(reshape(lamn_yn,l.W,[]), l.W,l.N,[]),2), l.W,[]);
-
+           
             %%%%%%%%%%%%%%%%%%%%%%%%%%%
             if max(l.A,[],"all") > 1e1*20
                 warning("A big " + max(l.A,[],"all"))
@@ -887,13 +896,13 @@ classdef SOMFNN_GPU
             %     dot(o.Layer{l}.A,o.Layer{l}.A)
             % end
 
-            DeDy = yh - y;  % (wl,MB)
+            DeDy = o.setDev(yh - y);  % (wl,MB)
 
             % o.lamReg = o.lamReg - o.LearningRate * sum(o.Layer{end}.A,"all")^2;
             % DeDy = (yh - y) + o.lamReg * sum(o.Layer{end}.A,"all")^2;
 
-            d = cell(1,o.n_Layer);
-            d{o.n_Layer} =  setDev(reshape(DeDy, o.Layer{end}.W, 1, 1, [])); % (W,MB) -> (W,1,1,MB)
+            d = (cell(1,o.n_Layer));
+            d{o.n_Layer} =  (reshape(DeDy, o.Layer{end}.W, 1, 1, [])); % (W,MB) -> (W,1,1,MB)
 
             % Rule/N on third dimention
             % MB on forth dimention
@@ -904,13 +913,13 @@ classdef SOMFNN_GPU
                 M = o.Layer{l}.M;
                 W = o.Layer{l}.W;
 
-                xbar_4D = setDev(BP_pars.xbar_4D{l}); %(M+1,1,1,MB)
-                lambda_4D = setDev(BP_pars.lambda_4D{l}); %(1,1,N,MB)
-                AfpAx_4D = setDev(BP_pars.AfpAx_4D{l}); %(W,1,N,MB)
-                AfAx_4D = setDev(BP_pars.AfAx_4D{l}); %(W,1,N,MB)
+                xbar_4D = (BP_pars.xbar_4D{l}); %(M+1,1,1,MB)
+                lambda_4D = (BP_pars.lambda_4D{l}); %(1,1,N,MB)
+                AfpAx_4D = (BP_pars.AfpAx_4D{l}); %(W,1,N,MB)
+                AfAx_4D = (BP_pars.AfAx_4D{l}); %(W,1,N,MB)
 
-                P_4D = setDev(reshape(o.Layer{l}.P(:,n), M,1,N)); %(M,N)=>(M,1,N,MB=NoNeed)
-                taw2_4D = setDev(reshape(o.GetTau2(o.Layer{l},n), 1,1,N)); %(N,1)=>(1,1,N,MB=NoNeed)
+                P_4D = o.setDev(reshape(o.Layer{l}.P(:,n), M,1,N)); %(M,N)=>(M,1,N,MB=NoNeed)
+                taw2_4D = o.setDev(reshape(o.GetTau2(o.Layer{l},n), 1,1,N)); %(N,1)=>(1,1,N,MB=NoNeed)
                 %(M,1,N,MB)=2*((M,1,N,1)-(M,1,1,MB))./(1,1,N,1)
                 pxt_4D = 2 * (P_4D - xbar_4D(2:end,:,:,:)) ./ taw2_4D;
                 %(M,1,N,MB)=(1,1,N,MB).*((M,1,N,MB)-sum((1,1,N,MB).*(M,1,N,MB),3)=(M,1,1,MB))
@@ -948,8 +957,8 @@ classdef SOMFNN_GPU
                 else
                     rem_rules = true(N*W,1);
                 end
-                o.Layer{l}.A = setDev(o.Layer{l}.A);
-                o.Layer{l}.A(rem_rules,:) = setDev(1-o.LearningRate*o.RegularizationTerm/size(xbar_4D,4)) ...
+                o.Layer{l}.A = (o.Layer{l}.A);
+                o.Layer{l}.A(rem_rules,:) = (1-o.LearningRate*o.RegularizationTerm/size(xbar_4D,4)) ...
                     * (o.Layer{l}.A(rem_rules,:)) - o.LearningRate * DeDA(rem_rules,:);
 
                 if sum(isinf(o.Layer{l}.A),"all") || sum(isnan(o.Layer{l}.A),"all")
@@ -1071,6 +1080,7 @@ classdef SOMFNN_GPU
             % lam : Firing Strength of Cluster(n) with x : (#rule,#data)
 
             [D,tau,Dall] = o.GetDensity(x,l,n);      % D(#rule,#data)
+            D = o.setDev(D);
             lam = D ./ sum(D);          % lam(#rule,#data)
         end
 
@@ -1283,16 +1293,16 @@ classdef SOMFNN_GPU
                 o.Layer{l}.NO = l;
                 o.Layer{l}.M = o.n_nodes(l);
                 o.Layer{l}.W = o.n_nodes(l+1);
-                o.Layer{l}.gMu = setDev((zeros(o.Layer{l}.M, 1))); %inf
+                o.Layer{l}.gMu = ((zeros(o.Layer{l}.M, 1))); %inf
                 o.Layer{l}.gX = zeros;%(o.Layer{l}.M, 1); %inf
                 o.Layer{l}.N = 0;
-                o.Layer{l}.taw = setDev((zeros(round(max_rule/2), 1))); % /2 ?
+                o.Layer{l}.taw = ((zeros(round(max_rule/2), 1))); % /2 ?
                 o.Layer{l}.CS = 0;
-                o.Layer{l}.Cc = setDev((zeros(o.Layer{l}.M, round(max_rule/2)))); % /2 ? %inf
-                o.Layer{l}.CX = setDev(zeros(1, round(max_rule/2))); % /2 ? %inf
-                o.Layer{l}.P = setDev((zeros(o.Layer{l}.M, round(max_rule/2)))); % /2 ? %inf
-                o.Layer{l}.A = setDev([]);
-                o.Layer{l}.X = setDev(zeros(o.Layer{l}.M + 1, o.MiniBatchSize)); %inf
+                o.Layer{l}.Cc = ((zeros(o.Layer{l}.M, round(max_rule/2)))); % /2 ? %inf
+                o.Layer{l}.CX = (zeros(1, round(max_rule/2))); % /2 ? %inf
+                o.Layer{l}.P = ((zeros(o.Layer{l}.M, round(max_rule/2)))); % /2 ? %inf
+                o.Layer{l}.A = o.setDev([]);
+                o.Layer{l}.X = (zeros(o.Layer{l}.M + 1, o.MiniBatchSize)); %inf
             end
             o.n_rulePerLayer = zeros(1, o.n_Layer);
             % o.lambda_MB = cell(1,o.n_Layer);
@@ -1365,21 +1375,32 @@ classdef SOMFNN_GPU
         %     end
         % end
 
-        function [x,y] = checkData(~,x,y)
+        function [x,y] = checkData(o,x,y)
             nanIdxs = logical(sum([sum(isnan(x),2),sum(isnan(y),2)],2));
             x(nanIdxs,:) = [];
             y(nanIdxs,:) = [];
             if sum(nanIdxs)
                 warning("remove "+num2str(sum(nanIdxs))+" NAN row of data")
             end
-            x=setDev(x);
-            y=setDev(y);
+            x=(x);
+            y=(y);
         end
 
         function x = setDev(o,x)
-            if o.useGpu && ~isa(x,'gpuArray') && gpuDeviceCount>0
-                x = gpuArray(x);
+            if o.useGpu && gpuDeviceCount>0
+                if iscell(x)
+                    for i = 1:numel(x)
+                        if ~isa(x,'gpuArray')
+                            x{i} = gpuArray(x{i});
+                        end
+                    end
+                else
+                    if ~isa(x,'gpuArray')
+                        x = gpuArray(x);
+                    end
+                end
             end
         end
+
     end
 end
